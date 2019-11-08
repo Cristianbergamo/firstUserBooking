@@ -4,8 +4,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from keras import Sequential
-from keras.layers import Dense, Dropout
-from keras.optimizers import Adam
+from keras.layers import Dense
+from keras.layers import Dropout
+from keras.optimizers import SGD,Adam,Adadelta
+from sklearn.decomposition import PCA
+from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 
@@ -38,12 +41,6 @@ def histogram(x_ticks, x1, x2, labelX1, labelX2, labelXAxis, labelYAxis, w, titl
     return
 
 
-def multiLinePlot(x_ticks, Y_s, labels, title):
-    fig = plt.figure()
-
-    return
-
-
 def ageBucketAnalysis():
     age_gender_bkts = pd.read_csv(os.path.join(os.getcwd(), 'data', 'age_gender_bkts.csv'))
     for age_bucket in np.unique(age_gender_bkts['age_bucket']):
@@ -58,65 +55,102 @@ def ageBucketAnalysis():
                   'Age bucket %s divided in genders and countries' % age_bucket,
                   os.path.join(os.getcwd(), 'exploratoryAnalysis', 'age_bucket_%s.png' % age_bucket))
 
+    return
 
-def getModel(layers=None):
+
+def getModel(layers=None, dropout_rate=None, optimizer=None, regularizer=None,loss_function = None, output_units=2):
     model = Sequential()
+    model.add(Dense(units=layers[1], activation='relu', input_dim=33, kernel_regularizer=regularizer))
+    if dropout_rate is not None:
+        model.add(Dropout(dropout_rate))
 
-    model.add(Dense(units=layers[1], activation='softmax', input_dim=132))
     for layer in layers[1:]:
-        model.add(Dense(units=layer, activation='softmax'))
-        model.add(Dropout(0, 25))
+        model.add(Dense(units=layer, activation='relu', kernel_regularizer=regularizer))
+        if dropout_rate is not None:
+            model.add(Dropout(dropout_rate))
 
-    model.add(Dense(units=12, activation='softmax'))
+    model.add(Dense(units=output_units, activation='softmax'))
 
-    model.compile(optimizer=Adam(), loss='mse')
+    model.compile(optimizer=optimizer, loss=loss_function, metrics=['acc'])
 
     return model
 
 
-def prediction(train_users):
-    X = train_users[
-        ['age', 'gender', 'signup_method', 'signup_flow', 'language', 'affiliate_channel', 'affiliate_provider',
-         'first_affiliate_tracked', 'signup_app', 'first_device_type', 'first_browser']]
+def predict(train_users,layers = [],optimizer = None,loss_function = None, output_units=None):
     Y = train_users['country_destination']
-    X = pd.get_dummies(X)
-    Y = pd.get_dummies(Y)
-    X['age'].fillna(X['age'].mode()[0], inplace=True)
-    X['signup_flow'].fillna(X['signup_flow'].mode()[0], inplace=True)
+    X = train_users.iloc[:, 2:]
+    Y_one_hot = pd.get_dummies(Y)
 
     mms = MinMaxScaler()
-    X = mms.fit_transform(X)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.33, random_state=42)
-    # cl = RandomForestClassifier()
+    X_train, X_test, y_train, y_test = train_test_split(X, Y_one_hot, test_size=0.33, random_state=42)
 
-    cl = getModel([280, 560, 190])
-    cl.fit(np.array(X_train), np.array(y_train), epochs=100, verbose=0)
-    prediction = cl.predict(X_test)
-    prediction_df = pd.DataFrame({'predicted': prediction, 'true': y_test})
-    prediction_df.to_csv('test.csv')
+    X_train = mms.fit_transform(X_train)
+    model = getModel(layers=layers, optimizer=optimizer, regularizer=None, dropout_rate=None,
+                     loss_function=loss_function,output_units=output_units)
+    count_countries = np.unique(Y, return_counts=True)
+    max_count = np.argmax(count_countries[1])
+    class_weight = {}
+    for j, i in enumerate(count_countries[1]):
+        class_weight[j] = count_countries[1][max_count] / i
+    y_train = np.array(y_train)
+    y_test = np.array(y_test)
+    #
+    # '''oversampling minority classes'''
+    # sm = SMOTE()
+    # X_train, y_train = sm.fit_sample(np.array(X_train), np.array(y_train))
+
+    model.fit(X_train, y_train, epochs=100, class_weight=class_weight, batch_size=32)
+
+    prediction = model.predict(mms.transform(X_test))
+    prediction = np.argmax(prediction, axis=1)
+    y_test = np.argmax(y_test, axis=1)
+    print('accuracy: %s', str(accuracy_score(y_true=y_test, y_pred=prediction)))
+
+    return prediction
+    # prediction_df = pd.DataFrame({'predicted': prediction, 'true': y_test})
+    # prediction_df.to_csv('test.csv')
+
+def multiModelPrediction(users):
+    NDF_df = users.copy()
+    NDF_df['country_destination'] = np.array(NDF_df['country_destination'] == 'NDF').astype(int)
+    prediction_NDF = predict(NDF_df,layers=[8,8,8],optimizer = SGD(lr = 0.0005),loss_function='binary_crossentropy',output_units=2)
+    NDF_df['prediction'] = prediction_NDF
+
+    USA_df = NDF_df[prediction_NDF == 0]
+    USA_df['country_destination'] = np.array(USA_df['country_destination'] == 'US').astype(int)
+    prediction_USA = predict(USA_df,layers=[8,8,8],loss_function = 'binary_crossentropy',output_units=2)
+    USA_df['prediction'] = prediction_USA
+
+    countries_df = USA_df[prediction_USA == 0]
+    prediction_countries = predict(countries_df,layers=[12,12,12,12,12],loss_function='categorical_crossentropy',output_units=10)
+    countries_df['prediction'] = prediction_countries
+
+    result = pd.concat((NDF_df[['id','prediction']],USA_df[['id','prediction']],countries_df[['id','prediction']]),axis = 0)
 
 
-def sessionsTrain(boolean_booked=0):
+    return
+
+
+def sessionsUsers(boolean_booked=0, users=None):
     sessions = pd.read_csv(os.path.join(os.getcwd(), 'data', 'sessions.csv'))
-    train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
     if boolean_booked:
-        train_users['booked'] = np.array(train_users['country_destination'] != 'NDF').astype(int)
-    sessions_train = sessions[sessions['user_id'].isin(train_users['id'])]
-    sessions_train['min_elapsed'] = sessions_train['secs_elapsed'] / 60
-    sessions_train.drop(['secs_elapsed'], axis=1, inplace=True)
-    sessions_train = sessions_train.merge(train_users[['id', ['country_destination', 'booked'][boolean_booked]]],
+        users['booked'] = np.array(users['country_destination'] != 'NDF').astype(int)
+    sessions_users = sessions[sessions['user_id'].isin(users['id'])]
+    sessions_users['min_elapsed'] = sessions_users['secs_elapsed'] / 60
+    sessions_users.drop(['secs_elapsed'], axis=1, inplace=True)
+    sessions_users = sessions_users.merge(users[['id', ['country_destination', 'booked'][boolean_booked]]],
                                           left_on='user_id', right_on='id').drop('id', axis=1)
 
-    return sessions_train
+    return sessions_users
 
 
-def sessionsAnalysisBooked(col_to_analyze='action_type', sessions_train=None):
-    sessions_train['count'] = 1
+def sessionsAnalysisBooked(col_to_analyze='action_type', sessions=None):
+    sessions['count'] = 1
 
     ''' Analisi durata e quantità azioni'''
     for j, val in enumerate(['min_elapsed', 'count']):
-        pivot = sessions_train[['user_id', col_to_analyze, val, 'booked']].pivot_table(
+        pivot = sessions[['user_id', col_to_analyze, val, 'booked']].pivot_table(
             index=['user_id', col_to_analyze, 'booked'],
             values=val,
             aggfunc='sum').reset_index()
@@ -125,52 +159,32 @@ def sessionsAnalysisBooked(col_to_analyze='action_type', sessions_train=None):
         pivot_0_pivot = pivot_0.pivot_table(index=col_to_analyze, values=val, aggfunc='median')
         pivot_1 = pivot[pivot['booked'] == 1]
         pivot_1_pivot = pivot_1.pivot_table(index=col_to_analyze, values=val, aggfunc='median')
-        histogram(x, pivot_0_pivot[val], pivot_1_pivot[val], 'Not booked', 'Booked', 'Action Type', '%s' % val, 0.3,
-                  'Mediana %s tipologie di azioni' % (('del tempo totale speso dall\' utente sulle singole',
-                                                       'delle azioni totali per utente per singole')[j]),
+        histogram(x, pivot_0_pivot[val], pivot_1_pivot[val], 'Not booked', 'Booked', col_to_analyze, '%s' % val, 0.3,
+                  '%s - Mediana %s tipologie' % (
+                      col_to_analyze, ('del tempo totale speso dall\' utente sulle singole',
+                                       'delle azioni totali per utente per singole')[j]),
                   os.path.join(os.getcwd(), 'exploratoryAnalysis',
-                               'Mediana %s tipologie di azioni' % (('del tempo totale speso dall\' utente sull singole',
-                                                                    'delle azioni totali per utente per singole')[j])))
+                               '%s - Mediana %s tipologie.png' % (
+                                   col_to_analyze, ('del tempo totale speso dall\' utente sull singole',
+                                                    'delle azioni totali per utente per singole')[j])))
 
     ''' Analisi eterogeneità azioni'''
-    tab1 = sessions_train[sessions_train['booked'] == 0].pivot_table(index='user_id', values='action_type',
-                                                                     aggfunc=lambda x: len(np.unique(x.astype(str))))
-    tab2 = sessions_train[sessions_train['booked'] == 1].pivot_table(index='user_id', values='action_type',
-                                                                     aggfunc=lambda x: len(np.unique(x.astype(str))))
-    x1 = np.array(np.unique(tab1['action_type'], return_counts=True)).astype(float)
+    tab1 = sessions[sessions['booked'] == 0].pivot_table(index='user_id', values=col_to_analyze,
+                                                         aggfunc=lambda x: len(np.unique(x.astype(str))))
+    tab2 = sessions[sessions['booked'] == 1].pivot_table(index='user_id', values=col_to_analyze,
+                                                         aggfunc=lambda x: len(np.unique(x.astype(str))))
+    x1 = np.array(np.unique(tab1[col_to_analyze], return_counts=True)).astype(float)
     x1[1] = x1[1] / x1[1].sum()
-    x2 = np.array(np.unique(tab2['action_type'], return_counts=True)).astype(float)
+    x2 = np.array(np.unique(tab2[col_to_analyze], return_counts=True)).astype(float)
     x2[1] = x2[1] / x2[1].sum()
 
-    histogram(x1[0], x1[1], x2[1], 'Not Booked', 'Booked', 'N° different actions', 'relative frequency', 0.3,
-              'Booked/Not booked analysis of Action heterogeneity', os.path.join(os.getcwd(), 'exploratoryAnalysis',
-                                                                                 'Heterogeneity of actions in booked vs not booked.png'))
+    histogram(x1[0], x1[1], x2[1], 'Not Booked', 'Booked', 'N° different %s' % col_to_analyze, 'relative frequency',
+              0.3,
+              'Booked/Not booked analysis of %s heterogeneity' % col_to_analyze,
+              os.path.join(os.getcwd(), 'exploratoryAnalysis',
+                           'Heterogeneity of %s in booked vs not booked.png' % col_to_analyze))
 
     return
-
-
-def elaborateOnlineActivityStatistics(train_users=None):
-    sessions = pd.read_csv(os.path.join(os.getcwd(), 'data', 'sessions.csv'))
-    sessions_train = sessions[sessions['user_id'].isin(train_users['id'])]
-    del sessions
-    sessions_train['min_elapsed'] = sessions_train['secs_elapsed'] / 60
-    sessions_train.drop(['secs_elapsed'], axis=1, inplace=True)
-
-    pivot_sum_time = sessions_train.pivot_table(values='min_elapsed', index='user_id', columns='action_type',
-                                                aggfunc='sum').fillna(0)
-    pivot_sum_time.columns = [x + '_total_time' for x in pivot_sum_time.columns]
-    pivot_sum_count = sessions_train.pivot_table(values='min_elapsed', index='user_id', columns='action_type',
-                                                 aggfunc='count').fillna(0)
-    pivot_sum_count.columns = [x + '_total_events' for x in pivot_sum_time.columns]
-    pivot_heterogeneity = sessions_train.pivot_table(values='action_type', index='user_id',
-                                                     aggfunc=lambda x: len(np.unique(x.astype(str))))
-    pivot_heterogeneity.columns = ['heterogeneity']
-
-    train_users = train_users.merge(pivot_sum_time, how='inner', left_on='id', right_index=True)
-    train_users = train_users.merge(pivot_sum_count, how='inner', left_on='id', right_index=True)
-    train_users = train_users.merge(pivot_heterogeneity, how='inner', left_on='id', right_index=True)
-
-    return train_users
 
 
 def sessionsAnalysisDestination(col_to_analyze='action_type', sessions_train=None):
@@ -195,14 +209,16 @@ def sessionsAnalysisDestination(col_to_analyze='action_type', sessions_train=Non
 
         xticks = sorted(sessions_train[col_to_analyze].astype(str).unique())
         plt.xticks(range(len(xticks)), xticks, rotation=45)
-        plt.title(['Tempo totale speso sulle singole azioni, diviso per Paese di destinazione',
-                   'Numero totale azioni per tipologia, diviso per Paese di destinazione'][j])
+        plt.title(['Tempo totale speso sulle singole %s, diviso per Paese di destinazione' % col_to_analyze,
+                   'Numero totale %s, diviso per Paese di destinazione' % col_to_analyze][j])
         plt.xlabel(col_to_analyze, fontweight='bold')
         plt.legend()
-        plt.ylabel(['Median tempo speso', 'Mediana numero azioni'][j], fontweight='bold')
+        plt.ylabel(['Median tempo speso', 'Mediana numero tipologie'][j], fontweight='bold')
         plt.savefig(os.path.join(os.getcwd(), 'exploratoryAnalysis',
-                                 ['Analisi tempo totale impegato sulle singole azioni per Paese di destinazione.png',
-                                  'Numero totale azioni per tipologia per Paese di destinazione.png'][j]))
+                                 [
+                                     'Analisi tempo totale impegato sulle singole %s per Paese di destinazione.png' % col_to_analyze,
+                                     'Numero totale %s per tipologia per Paese di destinazione.png' % col_to_analyze][
+                                     j]))
         plt.clf()
         plt.close()
 
@@ -210,76 +226,151 @@ def sessionsAnalysisDestination(col_to_analyze='action_type', sessions_train=Non
     for country in sessions_train['country_destination'].unique():
         df = sessions_train[sessions_train['country_destination'] == country]
         tab = df.pivot_table(index='user_id', values=col_to_analyze, aggfunc=lambda x: len(np.unique(x.astype(str))))
-        x = np.array(np.unique(tab['action_type'], return_counts=True)).astype(float)
+        x = np.array(np.unique(tab[col_to_analyze], return_counts=True)).astype(float)
         x[1] = x[1] / x[1].sum()
         plt.plot(x[0], x[1], linestyle='--', marker='_', label=country)
     plt.xlabel(col_to_analyze, fontweight='bold')
     plt.ylabel('Frequenza relativa', fontweight='bold')
-    plt.title('Eterogeneità azioni paese per paese')
+    plt.title('Eterogeneità %s paese per paese' % col_to_analyze)
     plt.legend()
-    plt.savefig(os.path.join(os.getcwd(), 'exploratoryAnalysis', 'Analisi eterogeneità azioni per singolo paese.png'))
+    plt.savefig(os.path.join(os.getcwd(), 'exploratoryAnalysis',
+                             'Analisi eterogeneità %s per singolo paese.png' % col_to_analyze))
     plt.clf()
     plt.close()
     return
 
 
+def elaborateOnlineActivityStatistics(users=None):
+    sessions = pd.read_csv(os.path.join(os.getcwd(), 'data', 'sessions.csv'))
+    sessions_users = mapDevices(sessions[sessions['user_id'].isin(users['id'])])
+    del sessions
+    sessions_users['min_elapsed'] = sessions_users['secs_elapsed'] / 60
+    sessions_users.drop(['secs_elapsed'], axis=1, inplace=True)
+
+    pivot_sum_action_time = sessions_users.pivot_table(values='min_elapsed', index='user_id', columns='action_type',
+                                                       aggfunc='sum').fillna(0)
+    pivot_sum_action_time.columns = [x + '_total_time' for x in pivot_sum_action_time.columns]
+    pivot_sum_action_count = sessions_users.pivot_table(values='min_elapsed', index='user_id', columns='action_type',
+                                                        aggfunc='count').fillna(0)
+    pivot_sum_action_count.columns = [x + '_total_events' for x in pivot_sum_action_count.columns]
+    pivot_action_heterogeneity = sessions_users.pivot_table(values='action_type', index='user_id',
+                                                            aggfunc=lambda x: len(np.unique(x.astype(str))))
+    pivot_action_heterogeneity.columns = ['action_heterogeneity']
+
+    pivot_sum_device_time = sessions_users.pivot_table(values='min_elapsed', index='user_id', columns='device_type',
+                                                       aggfunc='sum').fillna(0)
+    pivot_sum_device_time.columns = [x + '_total_time' for x in pivot_sum_device_time.columns]
+    pivot_sum_device_count = sessions_users.pivot_table(values='min_elapsed', index='user_id', columns='device_type',
+                                                        aggfunc='count').fillna(0)
+    pivot_sum_device_count.columns = [x + '_total_events' for x in pivot_sum_device_count.columns]
+    pivot_device_heterogeneity = sessions_users.pivot_table(values='device_type', index='user_id',
+                                                            aggfunc=lambda x: len(np.unique(x.astype(str))))
+    pivot_device_heterogeneity.columns = ['device_heterogeneity']
+
+    users = users.merge(pivot_sum_action_time, how='inner', left_on='id', right_index=True)
+    users = users.merge(pivot_sum_action_count, how='inner', left_on='id', right_index=True)
+    users = users.merge(pivot_action_heterogeneity, how='inner', left_on='id', right_index=True)
+    users = users.merge(pivot_sum_device_time, how='inner', left_on='id', right_index=True)
+    users = users.merge(pivot_sum_device_count, how='inner', left_on='id', right_index=True)
+    users = users.merge(pivot_device_heterogeneity, how='inner', left_on='id', right_index=True)
+
+    return users
+
+
+def mapDevices(sessions):
+    device_mapping = {'Windows Desktop': 'Desktop',
+                      '-unknown-': 'other',
+                      'Mac Desktop': 'Desktop',
+                      'Android Phone': 'Phone',
+                      'iPhone': 'Phone',
+                      'iPad Tablet': 'Tablet',
+                      'Android App Unknown Phone/Tablet': 'unknown',
+                      'Linux Desktop': 'Desktop',
+                      'Tablet': 'Tablet',
+                      'Chromebook': 'Desktop',
+                      'Blackberry': 'Phone',
+                      'iPodtouch': 'Phone',
+                      'Windows Phone': 'Phone',
+                      'Opera Phone': 'Phone'
+                      }
+    sessions.loc[:, ['device_type']] = sessions['device_type'].map(device_mapping)
+
+    return sessions
+
+
+def stackedBarChart(x_ticks, Ys, width, title, x_label, y_label, path, data_labels):
+    colors = np.random.randint(255, size=(len(Ys), 3)) / 255
+
+    N = len(x_ticks)
+    ind = np.arange(N)
+    plt.bar(ind, Ys[0], width, label=data_labels[0], color=colors[0])
+    bottom = Ys[0]
+    for i, y in enumerate(Ys[1:]):
+        i += 1
+        plt.bar(ind, y, width, bottom=bottom, label=data_labels[i], color=colors[i])
+        bottom += y
+
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.title(title)
+    plt.xticks(ind, x_ticks)
+    plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), prop={'size': 6})
+    plt.savefig(path)
+    plt.clf()
+    plt.close()
+
+    return
+
+
+def trainUsersAnalysis(users=None, columns_to_analyze=[]):
+    for column in columns_to_analyze:
+        if column == 'language':
+            users = users[users['language'] != 'en']
+        users_pivot = users.pivot_table(index=['country_destination'], columns=column, values='id', aggfunc='count')
+        users_pivot.fillna(0, inplace=True)
+        columns = users_pivot.columns
+        users_pivot['totale'] = users_pivot.sum(axis=1)
+        for col in columns:
+            users_pivot.loc[:, col] /= users_pivot.iloc[:, -1]
+        users_pivot.drop('totale', axis=1, inplace=True)
+
+        x_ticks = list(users_pivot.index)
+        Ys = [np.array(users_pivot.loc[:, col]) for col in columns]
+        path = os.path.join(os.getcwd(), 'exploratoryAnalysis',
+                            'stacked bar chart - relative frequency of %s per country.png' % column)
+        stackedBarChart(x_ticks, Ys, 0.4, 'Analysis of %s per country' % column, 'Country', 'relative frequency', path,
+                        columns)
+
+    return users
+
+
+def categoricalToPca(users):
+    categorical = ['gender', 'signup_method', 'signup_flow', 'language', 'affiliate_channel', 'affiliate_provider',
+                   'first_affiliate_tracked', 'signup_app', 'first_device_type', 'first_browser']
+    dummy_users = pd.get_dummies(users[categorical].fillna('nan'))
+    pca = PCA(3)
+    categoricalToPca = pd.DataFrame(pca.fit_transform(dummy_users))
+
+    return categoricalToPca
+
+
 if __name__ == '__main__':
-    # ageBucketAnalysis()
-    # sessionsAnalysisBooked('action_type', sessionsTrain(boolean_booked=1))
-    # sessionsAnalysisDestination('action_type',sessionsTrain(boolean_booked=0))
     train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
-    elaborateOnlineActivityStatistics(train_users)
-    # age_gender_bkts = pd.read_csv(os.path.join(os.getcwd(), 'data', 'age_gender_bkts.csv'))
-    # countries = pd.read_csv(os.path.join(os.getcwd(), 'data', 'countries.csv'))
+    train_users.drop('age', axis=1, inplace=True)
+    categorical_cols_encoded = categoricalToPca(train_users)
+    users = pd.concat((train_users[['id', 'country_destination']], categorical_cols_encoded), axis=1)
 
-    # train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
-    # prediction(train_users)
-    #
-    #
+    # ageBucketAnalysis()
+    # sessionsAnalysisBooked(col_to_analyze='action_type', sessions=sessionsTrain(boolean_booked=1))
+    # sessionsAnalysisDestination('action_type', sessionsTrain(boolean_booked=0))
+    # sessionsAnalysisBooked('device_type', mapDevices(sessionsTrain(boolean_booked=1)))
+    # sessionsAnalysisDestination('device_type', mapDevices(sessionsTrain(boolean_booked=0)))
+    # trainUsersAnalysis(users=train_users,
+    #                    columns_to_analyze=['gender', 'signup_method', 'signup_flow', 'language',
+    #                                        'affiliate_channel', 'affiliate_provider', 'first_affiliate_tracked',
+    #                                        'signup_app', 'first_device_type', 'first_browser'])
 
-    '''session analysis of who booked'''
-    # mask_who_booked_in2014 = train_users['country_destination'] != 'NDF'
-    # who_booked_after2014 = train_users[mask_who_booked_in2014]['id']
-    # sessions_who_booked = sessions_train[sessions_train['user_id'].isin(who_booked_after2014)]
-    # n_booked_with_online_data = sessions_who_booked['user_id'].nunique()
-    #
-    # df_actions_counts = pd.DataFrame({'actions': np.array(
-    #     np.unique(np.array(sessions_who_booked['action'].astype(str)), return_counts=True))[0], 'count':
-    #                                       np.array(np.unique(np.array(sessions_who_booked['action'].astype(str)),
-    #                                                          return_counts=True))[1]})
-    # df_actionsType_counts = pd.DataFrame({'actions': np.array(
-    #     np.unique(np.array(sessions_who_booked['action_type'].astype(str)), return_counts=True))[0], 'count':
-    #                                       np.array(np.unique(np.array(sessions_who_booked['action_type'].astype(str)),
-    #                                                          return_counts=True))[1]})
-    # df_actionsDetail_counts = pd.DataFrame({'actions': np.array(
-    #     np.unique(np.array(sessions_who_booked['action_detail'].astype(str)), return_counts=True))[0], 'count':
-    #                                       np.array(np.unique(np.array(sessions_who_booked['action_detail'].astype(str)),
-    #                                                          return_counts=True))[1]})
-    #
-    #
-    #
-    # '''session analysis of who didnt book'''
-    # mask_who_didntbook_in2014 = train_users['country_destination'] == 'NDF'
-    # who_didntbook_after2014 = train_users[mask_who_didntbook_in2014]['id']
-    # sessions_who_didntbook = sessions_train[sessions_train['user_id'].isin(who_didntbook_after2014)]
-    # n_didntbook_with_online_data = sessions_who_didntbook['user_id'].nunique()
-    #
-    # didntbook_df_actions_counts = pd.DataFrame({'actions': np.array(
-    #     np.unique(np.array(sessions_who_didntbook['action'].astype(str)), return_counts=True))[0], 'count':
-    #                                       np.array(np.unique(np.array(sessions_who_didntbook['action'].astype(str)),
-    #                                                          return_counts=True))[1]})
-    # didntbook_df_actionsType_counts = pd.DataFrame({'actions': np.array(
-    #     np.unique(np.array(sessions_who_didntbook['action_type'].astype(str)), return_counts=True))[0], 'count':
-    #                                           np.array(
-    #                                               np.unique(np.array(sessions_who_didntbook['action_type'].astype(str)),
-    #                                                         return_counts=True))[1]})
-    # didntbook_df_actionsDetail_counts = pd.DataFrame({'actions': np.array(
-    #     np.unique(np.array(sessions_who_didntbook['action_detail'].astype(str)), return_counts=True))[0], 'count':
-    #                                             np.array(np.unique(np.array(sessions_who_didntbook['action_detail'].astype(str)),
-    #                                                          return_counts=True))[1]})
-    #
+    full_df = elaborateOnlineActivityStatistics(users)
+    # predicted = predict(full_df,2)
+    multiModelPrediction(users)
 
-    #
-    #
-    # test_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'test_users.csv'))
-    # # countries.describe()
