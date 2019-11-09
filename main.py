@@ -1,95 +1,65 @@
 import os
+import pickle
+import random
 
 import numpy as np
 import pandas as pd
-from keras import Sequential
-from keras.layers import Dense
-from keras.layers import Dropout
-from keras.optimizers import SGD
+from imblearn.over_sampling import SMOTE
 from sklearn.decomposition import PCA
-from sklearn.metrics import accuracy_score
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.metrics import confusion_matrix, f1_score
+from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler
+from sklearn.svm import SVC
 
 pd.set_option('display.max_rows', 2000)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
-
-def getModel(layers=None, dropout_rate=None, optimizer=None, regularizer=None, loss_function=None, output_units=2):
-    model = Sequential()
-    model.add(Dense(units=layers[1], activation='relu', input_dim=33, kernel_regularizer=regularizer))
-    if dropout_rate is not None:
-        model.add(Dropout(dropout_rate))
-
-    for layer in layers[1:]:
-        model.add(Dense(units=layer, activation='relu', kernel_regularizer=regularizer))
-        if dropout_rate is not None:
-            model.add(Dropout(dropout_rate))
-
-    model.add(Dense(units=output_units, activation='softmax'))
-
-    model.compile(optimizer=optimizer, loss=loss_function, metrics=['acc'])
-
-    return model
-
-
-def predict(train_users, layers=[], optimizer=None, loss_function=None, output_units=None):
-    Y = train_users['country_destination']
-    X = train_users.iloc[:, 2:]
-    Y_one_hot = pd.get_dummies(Y)
-
-    mms = MinMaxScaler()
-
-    X_train, X_test, y_train, y_test = train_test_split(X, Y_one_hot, test_size=0.33, random_state=42)
-
-    X_train = mms.fit_transform(X_train)
-    model = getModel(layers=layers, optimizer=optimizer, regularizer=None, dropout_rate=None,
-                     loss_function=loss_function, output_units=output_units)
-    count_countries = np.unique(Y, return_counts=True)
-    max_count = np.argmax(count_countries[1])
-    class_weight = {}
-    for j, i in enumerate(count_countries[1]):
-        class_weight[j] = count_countries[1][max_count] / i
-    y_train = np.array(y_train)
-    y_test = np.array(y_test)
-    #
-    # '''oversampling minority classes'''
-    # sm = SMOTE()
-    # X_train, y_train = sm.fit_sample(np.array(X_train), np.array(y_train))
-
-    model.fit(X_train, y_train, epochs=100, class_weight=class_weight, batch_size=32)
-
-    prediction = model.predict(mms.transform(X_test))
-    prediction = np.argmax(prediction, axis=1)
-    y_test = np.argmax(y_test, axis=1)
-    print('accuracy: %s', str(accuracy_score(y_true=y_test, y_pred=prediction)))
-
-    return prediction
-    # prediction_df = pd.DataFrame({'predicted': prediction, 'true': y_test})
-    # prediction_df.to_csv('test.csv')
+normalizer = (MinMaxScaler(), StandardScaler(), RobustScaler())
+models = (GradientBoostingClassifier(), RandomForestClassifier(class_weight='balanced'), SVC(class_weight='balanced'))
+parameters = ({'learning_rate': [0.1,0.05,0.15],
+               'n_estimators': [50,100,200],
+               'max_depth': [5,10,15],
+               'max_features': [None,'auto']
+               },
+              {
+                  'n_estimators': [50, 100, 200],
+                  'criterion': ['gini', 'entropy'],
+                  'max_depth': [None, 10, 20],
+                  'max_features': ['auto', None],
+              },
+              {'C': [1,0.9,1.1],
+               'kernel': ['rbf','poly','sigmoid'],
+               'degree': [2,3,4]
+               })
 
 
-def multiModelPrediction(users):
-    NDF_df = users.copy()
-    NDF_df['country_destination'] = np.array(NDF_df['country_destination'] == 'NDF').astype(int)
-    prediction_NDF = predict(NDF_df, layers=[8, 8, 8], optimizer=SGD(lr=0.0005), loss_function='binary_crossentropy',
-                             output_units=2)
-    NDF_df['prediction'] = prediction_NDF
+def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_country=None, normalizer=None, model=None,
+             parameters=None, resampler=None,
+             model_name=None):
+    if normalizer is not None:
+        X_train = normalizer.fit_transform(X_train)
+        X_test = normalizer.transform(X_test)
 
-    USA_df = NDF_df[prediction_NDF == 0]
-    USA_df['country_destination'] = np.array(USA_df['country_destination'] == 'US').astype(int)
-    prediction_USA = predict(USA_df, layers=[8, 8, 8], loss_function='binary_crossentropy', output_units=2)
-    USA_df['prediction'] = prediction_USA
+    if resampler is not None:
+        X_train_r, y_train_r = resampler.fit_resample(X_train, y_train)
+        shuffled_index = random.sample(range(len(X_train_r)), len(X_train_r))
+        X_train_r = X_train_r[shuffled_index]
+        y_train_r = y_train_r[shuffled_index]
 
-    countries_df = USA_df[prediction_USA == 0]
-    prediction_countries = predict(countries_df, layers=[12, 12, 12, 12, 12], loss_function='categorical_crossentropy',
-                                   output_units=10)
-    countries_df['prediction'] = prediction_countries
-
-    result = pd.concat((NDF_df[['id', 'prediction']], USA_df[['id', 'prediction']], countries_df[['id', 'prediction']]),
-                       axis=0)
-
+    gs = GridSearchCV(model, parameters, cv=5, verbose=2, scoring='f1', iid=False, refit=True)
+    gs.fit(X_train_r, y_train_r)
+    with open(os.path.join(os.getcwd(), 'validationLogs',
+                           '%s_%s_cross_validation_log.txt' % (model_name, target_country)), 'a') as logging_file:
+        logging_file.write(model_name + ' - ' + 'TARGET COUNTRY: %s \n' % target_country)
+        logging_file.write(str(gs.best_params_) + '\n')
+        logging_file.write('Best F1 - ' + str(gs.best_score_) + '\n')
+        logging_file.write('Training Confusion Matrix\n%s\n' % confusion_matrix(y_train, gs.predict(X_train)))
+        logging_file.write('Test Confusion Matrix\n%s\n' % confusion_matrix(y_test, gs.predict(X_test)))
+        logging_file.write('Test - F1 score\n%s \n\n' % f1_score(y_test, gs.predict(X_test)))
+        logging_file.close()
     return
 
 
@@ -155,18 +125,38 @@ def categoricalToPca(users):
     categorical = ['gender', 'signup_method', 'signup_flow', 'language', 'affiliate_channel', 'affiliate_provider',
                    'first_affiliate_tracked', 'signup_app', 'first_device_type', 'first_browser']
     dummy_users = pd.get_dummies(users[categorical].fillna('nan'))
-    pca = PCA(14)
+    pca = PCA(3)
     categoricalToPca = pd.DataFrame(pca.fit_transform(dummy_users))
 
     return categoricalToPca
 
 
 if __name__ == '__main__':
-    train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
-    train_users.drop('age', axis=1, inplace=True)
-    categorical_cols_encoded = categoricalToPca(train_users)
-    users = pd.concat((train_users[['id', 'country_destination']], categorical_cols_encoded), axis=1)
+    # train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
+    # train_users.drop('age', axis=1, inplace=True)
+    # categorical_cols_encoded = categoricalToPca(train_users)
+    # users = pd.concat((train_users[['id', 'country_destination']], categorical_cols_encoded), axis=1)
+    #
+    # full_df = elaborateOnlineActivityStatistics(users)
+    # with open('full_df','wb') as f:
+    #     pickle.dump(full_df,f)
+    #     f.close()
 
-    full_df = elaborateOnlineActivityStatistics(users)
-    # predicted = predict(full_df,2)
-    multiModelPrediction(users)
+    with open('full_df', 'rb') as f:
+        full_df = pickle.load(f)
+        f.close()
+
+    # predicted = predict(full_df, layers=[12, 12, 12, 12, 12], loss_function='categorical_crossentropy',
+    #                     optimizer=None, output_units=12)
+    Y = np.array(full_df['country_destination'])
+    X = full_df.iloc[:, 2:]
+    X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.20, random_state=42)
+
+    for country in np.unique(full_df['country_destination']):
+        y_train_dummy = (y_train == country).astype(int)
+        y_test_dummy = (y_test == country).astype(int)
+        model = 2  # 0:GradientBoosting; 1:RandomForest; 2:SVM
+        resampler = SMOTE()
+        validate(X_train=X_train, y_train=y_train_dummy, X_test=X_test, y_test=y_test_dummy, target_country=country,
+                 normalizer=MinMaxScaler(), model=models[model], parameters=parameters[model],
+                 resampler=resampler, model_name='SVM')

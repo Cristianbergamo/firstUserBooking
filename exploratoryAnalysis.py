@@ -229,11 +229,11 @@ if __name__ == '__main__':
     train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
     train_users.drop('age', axis=1, inplace=True)
     ageBucketAnalysis()
-    sessionsAnalysisBooked(col_to_analyze='action_type', sessions=sessionsUsers(boolean_booked=1))
-    sessionsAnalysisDestination('action_type', sessionsUsers(boolean_booked=0))
-    sessionsAnalysisBooked('device_type', mapDevices(sessionsUsers(boolean_booked=1)))
-    sessionsAnalysisDestination('device_type', mapDevices(sessionsUsers(boolean_booked=0)))
+    sessionsAnalysisBooked(col_to_analyze='action_type', sessions=sessionsUsers(boolean_booked=1, users=train_users))
+    sessionsAnalysisDestination('action_type', sessionsUsers(boolean_booked=0, users=train_users))
+    sessionsAnalysisBooked('device_type', mapDevices(sessionsUsers(boolean_booked=1, users=train_users)))
+    sessionsAnalysisDestination('device_type', mapDevices(sessionsUsers(boolean_booked=0, users=train_users)))
     trainUsersAnalysis(users=train_users,
-                       columns_to_analyze=['gender', 'signup_method', 'signup_flow', 'language',
-                                           'affiliate_channel', 'affiliate_provider', 'first_affiliate_tracked',
-                                           'signup_app', 'first_device_type', 'first_browser'])
+                       columns_to_analyze=['gender', 'signup_method', 'signup_flow', 'language', 'affiliate_channel',
+                                           'affiliate_provider', 'first_affiliate_tracked', 'signup_app',
+                                           'first_device_type', 'first_browser'])
