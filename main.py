@@ -17,12 +17,13 @@ pd.set_option('display.max_rows', 2000)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
-normalizer = (MinMaxScaler(), StandardScaler(), RobustScaler())
-models = (GradientBoostingClassifier(), RandomForestClassifier(class_weight='balanced'), SVC(class_weight='balanced'))
-parameters = ({'learning_rate': [0.1,0.05,0.15],
-               'n_estimators': [50,100,200],
-               'max_depth': [5,10,15],
-               'max_features': [None,'auto']
+NORMALIZER = (MinMaxScaler(), StandardScaler(), RobustScaler())
+MODELS = (GradientBoostingClassifier(), RandomForestClassifier(class_weight='balanced'),
+          SVC(gamma='auto', class_weight='balanced'))
+PARAMETERS = ({'learning_rate': [0.1, 0.05, 0.15],
+               'n_estimators': [50, 100, 200],
+               'max_depth': [5, 10, 15],
+               'max_features': [None, 'auto']
                },
               {
                   'n_estimators': [50, 100, 200],
@@ -30,10 +31,16 @@ parameters = ({'learning_rate': [0.1,0.05,0.15],
                   'max_depth': [None, 10, 20],
                   'max_features': ['auto', None],
               },
-              {'C': [1,0.9,1.1],
-               'kernel': ['rbf','poly','sigmoid'],
-               'degree': [2,3,4]
+              {'C': [1, 0.9, 1.1],
+               'kernel': ['rbf', 'poly', 'sigmoid'],
+               'degree': [2, 3, 4]
                })
+NAMES = ['GRADIENTBOOSTING', 'RANDOMFOREST', 'SVM']
+
+NDF_GRADIENT = GradientBoostingClassifier(learning_rate=0.1, max_depth=5, max_features=None, n_estimators=200)
+NDF_FOREST = RandomForestClassifier(criterion='entropy', max_depth=None, max_features='auto', n_estimators=200,
+                                    class_weight='balanced')
+NDF_SVM = SVC(gamma='auto', class_weight='balanced', C=1.1, degree=2, kernel='rbf')
 
 
 def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_country=None, normalizer=None, model=None,
@@ -46,11 +53,11 @@ def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_countr
     if resampler is not None:
         X_train_r, y_train_r = resampler.fit_resample(X_train, y_train)
         shuffled_index = random.sample(range(len(X_train_r)), len(X_train_r))
-        X_train_r = X_train_r[shuffled_index]
-        y_train_r = y_train_r[shuffled_index]
+        X_train = X_train_r[shuffled_index]
+        y_train = y_train_r[shuffled_index]
 
     gs = GridSearchCV(model, parameters, cv=5, verbose=2, scoring='f1', iid=False, refit=True)
-    gs.fit(X_train_r, y_train_r)
+    gs.fit(X_train, y_train)
     with open(os.path.join(os.getcwd(), 'validationLogs',
                            '%s_%s_cross_validation_log.txt' % (model_name, target_country)), 'a') as logging_file:
         logging_file.write(model_name + ' - ' + 'TARGET COUNTRY: %s \n' % target_country)
@@ -131,6 +138,45 @@ def categoricalToPca(users):
     return categoricalToPca
 
 
+def fitAndSaveTrees(X_train, y_train, model, model_name):
+    resampler = SMOTE()
+    X_train_r, y_train_r = resampler.fit_resample(X_train, y_train)
+
+    model.fit(X_train_r, y_train_r)
+    with open(os.path.join(os.getcwd(), 'models', model_name + r'.bin'), 'wb') as model_file:
+        pickle.dump(model, model_file)
+        model_file.close()
+
+    return model
+
+
+def fitAndSaveSVM(X_train, y_train, model, model_name):
+    mms = MinMaxScaler()
+    X_train_scaled = mms.fit_transform(X_train)
+
+    resampler = SMOTE()
+    X_train_r, y_train_r = resampler.fit_resample(X_train_scaled, y_train)
+
+    model.fit(X_train_r, y_train_r)
+    with open(os.path.join(os.getcwd(), 'models', model_name + r'.bin'), 'wb') as model_file:
+        pickle.dump(model, model_file)
+        model_file.close()
+
+    with open(os.path.join(os.getcwd(), 'models', model_name + r'_mms.bin'), 'wb') as model_file:
+        pickle.dump(mms, model_file)
+        model_file.close()
+
+    return model
+
+
+def loadFitModel(model_name):
+    with open(os.path.join(os.getcwd(), 'models', model_name + r'.bin'), 'rb') as model_file:
+        model = pickle.load(model_file)
+        model_file.close()
+
+    return model
+
+
 if __name__ == '__main__':
     # train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
     # train_users.drop('age', axis=1, inplace=True)
@@ -146,17 +192,34 @@ if __name__ == '__main__':
         full_df = pickle.load(f)
         f.close()
 
-    # predicted = predict(full_df, layers=[12, 12, 12, 12, 12], loss_function='categorical_crossentropy',
-    #                     optimizer=None, output_units=12)
+    resampler = SMOTE()
+    mms = MinMaxScaler()
+
     Y = np.array(full_df['country_destination'])
     X = full_df.iloc[:, 2:]
     X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.20, random_state=42)
+    y_train_ndf = (y_train == 'NDF').astype(int)
+    y_test_ndf = (y_test == 'NDF').astype(int)
 
-    for country in np.unique(full_df['country_destination']):
-        y_train_dummy = (y_train == country).astype(int)
-        y_test_dummy = (y_test == country).astype(int)
-        model = 2  # 0:GradientBoosting; 1:RandomForest; 2:SVM
-        resampler = SMOTE()
-        validate(X_train=X_train, y_train=y_train_dummy, X_test=X_test, y_test=y_test_dummy, target_country=country,
-                 normalizer=MinMaxScaler(), model=models[model], parameters=parameters[model],
-                 resampler=resampler, model_name='SVM')
+    # '''VALIDATION NDF'''
+    # model = 2  # 0:GradientBoosting; 1:RandomForest; 2:SVM
+    # validate(X_train=X_train, y_train=y_train_ndf, X_test=X_test, y_test=y_test_ndf, target_country='NDF',
+    #          normalizer=mms, model=MODELS[model], parameters=PARAMETERS[model],
+    #          resampler=None, model_name=NAMES[model])
+
+    # '''FIT AND SAVE MODELS WITH VALIDATED PARAMETERS FOR NDF'''
+    # ndf_gradient = fitAndSaveTrees(X_train,y_train_ndf,NDF_GRADIENT,'ndfgradient')
+    # ndf_forest = fitAndSaveTrees(X_train,y_train_ndf,NDF_FOREST,'ndfforest')
+    # ndf_svm = fitAndSaveSVM(X_train, y_train_ndf, NDF_SVM, 'ndfsvm')
+
+    '''VALIDATION US'''
+    X_train_booked = X_train[y_train != 'NDF']
+    y_train_booked = y_train[y_train != 'NDF']
+    X_test_booked = X_test[y_test != 'NDF']
+    y_test_booked = y_test[y_test != 'NDF']
+    y_train_us = (y_train_booked == 'US').astype(int)
+    y_test_us = (y_test_booked == 'US').astype(int)
+    model = 0
+    validate(X_train=X_train_booked, y_train=y_train_us, X_test=X_test_booked, y_test=y_test_us, target_country='US',
+             normalizer=None, model=MODELS[model], parameters=PARAMETERS[model],
+             resampler=None, model_name=NAMES[model])
