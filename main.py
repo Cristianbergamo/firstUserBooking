@@ -17,6 +17,9 @@ pd.set_option('display.max_rows', 2000)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
+RESAMPLER = SMOTE()
+MMS = MinMaxScaler()
+
 NORMALIZER = (MinMaxScaler(), StandardScaler(), RobustScaler())
 MODELS = (GradientBoostingClassifier(), RandomForestClassifier(class_weight='balanced'),
           SVC(gamma='auto', class_weight='balanced'))
@@ -42,32 +45,10 @@ NDF_FOREST = RandomForestClassifier(criterion='entropy', max_depth=None, max_fea
                                     class_weight='balanced')
 NDF_SVM = SVC(gamma='auto', class_weight='balanced', C=1.1, degree=2, kernel='rbf')
 
-
-def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_country=None, normalizer=None, model=None,
-             parameters=None, resampler=None,
-             model_name=None):
-    if normalizer is not None:
-        X_train = normalizer.fit_transform(X_train)
-        X_test = normalizer.transform(X_test)
-
-    if resampler is not None:
-        X_train_r, y_train_r = resampler.fit_resample(X_train, y_train)
-        shuffled_index = random.sample(range(len(X_train_r)), len(X_train_r))
-        X_train = X_train_r[shuffled_index]
-        y_train = y_train_r[shuffled_index]
-
-    gs = GridSearchCV(model, parameters, cv=5, verbose=2, scoring='f1', iid=False, refit=True)
-    gs.fit(X_train, y_train)
-    with open(os.path.join(os.getcwd(), 'validationLogs',
-                           '%s_%s_cross_validation_log.txt' % (model_name, target_country)), 'a') as logging_file:
-        logging_file.write(model_name + ' - ' + 'TARGET COUNTRY: %s \n' % target_country)
-        logging_file.write(str(gs.best_params_) + '\n')
-        logging_file.write('Best F1 - ' + str(gs.best_score_) + '\n')
-        logging_file.write('Training Confusion Matrix\n%s\n' % confusion_matrix(y_train, gs.predict(X_train)))
-        logging_file.write('Test Confusion Matrix\n%s\n' % confusion_matrix(y_test, gs.predict(X_test)))
-        logging_file.write('Test - F1 score\n%s \n\n' % f1_score(y_test, gs.predict(X_test)))
-        logging_file.close()
-    return
+US_GRADIENT = GradientBoostingClassifier(learning_rate=None, max_depth=None, max_features=None, n_estimators=None)
+US_FOREST = RandomForestClassifier(criterion=None, max_depth=None, max_features=None, n_estimators=None,
+                                   class_weight=None)
+US_SVM = SVC(gamma=None, class_weight=None, C=None, degree=None, kernel=None)
 
 
 def elaborateOnlineActivityStatistics(users=None):
@@ -138,9 +119,10 @@ def categoricalToPca(users):
     return categoricalToPca
 
 
-def fitAndSaveTrees(X_train, y_train, model, model_name):
-    resampler = SMOTE()
-    X_train_r, y_train_r = resampler.fit_resample(X_train, y_train)
+def fitAndSaveTrees(X_train, y_train, model, model_name, resample=False):
+    if resample:
+        resampler = SMOTE()
+        X_train_r, y_train_r = resampler.fit_resample(X_train, y_train)
 
     model.fit(X_train_r, y_train_r)
     with open(os.path.join(os.getcwd(), 'models', model_name + r'.bin'), 'wb') as model_file:
@@ -177,49 +159,110 @@ def loadFitModel(model_name):
     return model
 
 
+def multiModelPrediction(users, ndf_model, us_model, countries_model, scaler):
+    users['NDF_prob'] = ndf_model.predict_proba(users)
+    users['US_prob'] = us_model.predict_proba(users)
+    users[['', '', '', '', '', '', '', '', '', '']] = countries_model.predict(users)
+
+
+def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_country=None, normalizer=None, model=None,
+             parameters=None, resampler=None, scoring_metric='f1', model_name=None):
+    if normalizer is not None:
+        X_train = normalizer.fit_transform(X_train)
+        X_test = normalizer.transform(X_test)
+
+    if resampler is not None:
+        X_train_r, y_train_r = resampler.fit_resample(X_train, y_train)
+        shuffled_index = random.sample(range(len(X_train_r)), len(X_train_r))
+        X_train = X_train_r[shuffled_index]
+        y_train = y_train_r[shuffled_index]
+
+    gs = GridSearchCV(model, parameters, cv=5, verbose=2, scoring=scoring_metric, iid=False, refit=True)
+    gs.fit(X_train, y_train)
+    with open(os.path.join(os.getcwd(), 'validationLogs',
+                           '%s_%s_cross_validation_log.txt' % (model_name, target_country)), 'a') as logging_file:
+        logging_file.write(model_name + ' - ' + 'TARGET COUNTRY: %s \n' % target_country)
+        logging_file.write(str(gs.best_params_) + '\n')
+        logging_file.write('Best F1 - ' + str(gs.best_score_) + '\n')
+        logging_file.write('Training Confusion Matrix\n%s\n' % confusion_matrix(y_train, gs.predict(X_train)))
+        logging_file.write('Test Confusion Matrix\n%s\n' % confusion_matrix(y_test, gs.predict(X_test)))
+        logging_file.write('Test - F1 score\n%s \n\n' % f1_score(y_test, gs.predict(X_test), average=(
+            lambda x: 'weighted' if x == 'f1_weighted' else None)(scoring_metric)))
+        logging_file.close()
+    return
+
 if __name__ == '__main__':
+    # '''CREATE FULL DF'''
     # train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
     # train_users.drop('age', axis=1, inplace=True)
     # categorical_cols_encoded = categoricalToPca(train_users)
     # users = pd.concat((train_users[['id', 'country_destination']], categorical_cols_encoded), axis=1)
-    #
     # full_df = elaborateOnlineActivityStatistics(users)
+
+    # '''SAVE FULL DF'''
     # with open('full_df','wb') as f:
     #     pickle.dump(full_df,f)
     #     f.close()
 
+    '''LOAD FULL DF'''
     with open('full_df', 'rb') as f:
         full_df = pickle.load(f)
         f.close()
 
-    resampler = SMOTE()
-    mms = MinMaxScaler()
-
     Y = np.array(full_df['country_destination'])
     X = full_df.iloc[:, 2:]
     X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.20, random_state=42)
-    y_train_ndf = (y_train == 'NDF').astype(int)
-    y_test_ndf = (y_test == 'NDF').astype(int)
 
     # '''VALIDATION NDF'''
+    # y_train_ndf = (y_train == 'NDF').astype(int)
+    # y_test_ndf = (y_test == 'NDF').astype(int)
     # model = 2  # 0:GradientBoosting; 1:RandomForest; 2:SVM
     # validate(X_train=X_train, y_train=y_train_ndf, X_test=X_test, y_test=y_test_ndf, target_country='NDF',
     #          normalizer=mms, model=MODELS[model], parameters=PARAMETERS[model],
-    #          resampler=None, model_name=NAMES[model])
+    #          resampler=None, model_name=NAMES[model],scoring_metric = 'f1')
 
     # '''FIT AND SAVE MODELS WITH VALIDATED PARAMETERS FOR NDF'''
+    # y_train_ndf = (y_train == 'NDF').astype(int)
     # ndf_gradient = fitAndSaveTrees(X_train,y_train_ndf,NDF_GRADIENT,'ndfgradient')
     # ndf_forest = fitAndSaveTrees(X_train,y_train_ndf,NDF_FOREST,'ndfforest')
     # ndf_svm = fitAndSaveSVM(X_train, y_train_ndf, NDF_SVM, 'ndfsvm')
 
-    '''VALIDATION US'''
-    X_train_booked = X_train[y_train != 'NDF']
-    y_train_booked = y_train[y_train != 'NDF']
-    X_test_booked = X_test[y_test != 'NDF']
-    y_test_booked = y_test[y_test != 'NDF']
-    y_train_us = (y_train_booked == 'US').astype(int)
-    y_test_us = (y_test_booked == 'US').astype(int)
+    # '''VALIDATION US'''
+    # X_train_booked = X_train[y_train != 'NDF']
+    # y_train_booked = y_train[y_train != 'NDF']
+    # X_test_booked = X_test[y_test != 'NDF']
+    # y_test_booked = y_test[y_test != 'NDF']
+    # y_train_us = (y_train_booked == 'US').astype(int)
+    # y_test_us = (y_test_booked == 'US').astype(int)
+    # model = 2
+    # validate(X_train=X_train_booked, y_train=y_train_us, X_test=X_test_booked, y_test=y_test_us, target_country='US',
+    #          normalizer=mms, model=MODELS[model], parameters=PARAMETERS[model],
+    #          resampler=None, model_name=NAMES[model],scoring_metric = 'f1')
+
+    # '''FIT AND SAVE MODELS WITH VALIDATED PARAMETERS FOR US'''
+    # X_train_booked = X_train[y_train != 'NDF']
+    # y_train_booked = y_train[y_train != 'NDF']
+    # y_train_us = (y_train_booked == 'US').astype(int)
+    # us_gradient = fitAndSaveTrees(X_train_booked,y_train_us,NDF_GRADIENT,'usgradient')
+    # us_forest = fitAndSaveTrees(X_train_booked,y_train_us,NDF_FOREST,'usforest')
+    # us_svm = fitAndSaveSVM(X_train_booked, y_train_us, NDF_SVM, 'ussvm')
+
+    '''VALIDATION BOOKED ABROAD'''
+    train_mask = np.logical_and(y_train != 'NDF', y_train != 'US')
+    test_mask = np.logical_and(y_test != 'NDF', y_test != 'US')
+    X_train_abroad = X_train[train_mask]
+    X_test_abroad = X_test[test_mask]
+    y_train_abroad = y_train[train_mask]
+    y_test_abroad = y_test[test_mask]
     model = 0
-    validate(X_train=X_train_booked, y_train=y_train_us, X_test=X_test_booked, y_test=y_test_us, target_country='US',
-             normalizer=None, model=MODELS[model], parameters=PARAMETERS[model],
-             resampler=None, model_name=NAMES[model])
+    validate(X_train=X_train_abroad, y_train=y_train_abroad, X_test=X_test_abroad, y_test=y_test_abroad,
+             target_country='ABROAD', normalizer=None, model=MODELS[model], parameters=PARAMETERS[model],
+             resampler=None, model_name=NAMES[model], scoring_metric='f1_weighted')
+
+    # '''FIT AND SAVE MODELS WITH VALIDATED PARAMETERS FOR BOOKED ABROAD'''
+    # train_mask = np.logical_and(y_train != 'NDF', y_train != 'US')
+    # X_train_abroad = X_train[train_mask]
+    # y_train_abroad = y_train[train_mask]
+    # abroad_gradient = fitAndSaveTrees(X_train_abroad, y_train_abroad, NDF_GRADIENT, 'abroadgradient')
+    # abroad_forest = fitAndSaveTrees(X_train_abroad, y_train_abroad, NDF_FOREST, 'abroadforest')
+    # abroad_svm = fitAndSaveSVM(X_train_abroad, y_train_abroad, NDF_SVM, 'abroadsvm')

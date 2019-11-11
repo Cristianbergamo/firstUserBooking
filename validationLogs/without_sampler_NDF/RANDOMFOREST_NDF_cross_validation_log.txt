@@ -1,0 +1,12 @@
+RANDOMFOREST - TARGET COUNTRY: NDF 
+{'criterion': 'gini', 'max_depth': None, 'max_features': 'auto', 'n_estimators': 200}
+Best F1 - 0.7978144452556466
+Training Confusion Matrix
+[[23001    83]
+ [   74 35891]]
+Test Confusion Matrix
+[[3154 2535]
+ [1413 7661]]
+Test - F1 score
+0.7951219512195121 
+
