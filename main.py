@@ -4,88 +4,197 @@ import random
 
 import numpy as np
 import pandas as pd
-from imblearn.over_sampling import SMOTE
+from imblearn import over_sampling
 from sklearn.decomposition import PCA
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.metrics import confusion_matrix, f1_score
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import roc_auc_score, balanced_accuracy_score, accuracy_score
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, OneHotEncoder
 from sklearn.svm import SVC
 
 pd.set_option('display.max_rows', 2000)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
+from xgboost.sklearn import XGBClassifier
 
-RESAMPLER = SMOTE()
 MMS = MinMaxScaler()
 
 NORMALIZER = (MinMaxScaler(), StandardScaler(), RobustScaler())
-MODELS = (GradientBoostingClassifier(), RandomForestClassifier(class_weight='balanced'),
-          SVC(gamma='auto', class_weight='balanced'))
-PARAMETERS = ({'learning_rate': [0.1, 0.05, 0.15],
-               'n_estimators': [50, 100, 200],
-               'max_depth': [5, 10, 15],
-               'max_features': [None, 'auto']
+MODELS = (
+    GradientBoostingClassifier(n_estimators=150, max_features='auto'), RandomForestClassifier(),
+    SVC(gamma='auto', class_weight='balanced'))
+PARAMETERS = ({'min_samples_split': [2, 5, 8],
+               'max_depth': [3, 5, 8],
+               'learning_rate': [0.08, 0.1, 0.12]},
+              {'class_weight': ['balanced'],
+               'n_estimators': [20],
+               'n_jobs': [2],
+               'criterion': ['gini', 'entropy'],
+               'max_depth': [None, 1, 3, 7],
+               'min_samples_split': [3, 10, 20],
+               'min_samples_leaf': [1, 4, 10, 21],
+               'max_features': [0.1, 0.3, 0.5, 0.8, 1.],
+               'max_leaf_nodes': [None, 3, 5, 10],
+
                },
-              {
-                  'n_estimators': [50, 100, 200],
-                  'criterion': ['gini', 'entropy'],
-                  'max_depth': [None, 10, 20],
-                  'max_features': ['auto', None],
-              },
               {'C': [1, 0.9, 1.1],
                'kernel': ['rbf', 'poly', 'sigmoid'],
                'degree': [2, 3, 4]
                })
 NAMES = ['GRADIENTBOOSTING', 'RANDOMFOREST', 'SVM']
 
-NDF_GRADIENT = GradientBoostingClassifier(learning_rate=0.1, max_depth=5, max_features=None, n_estimators=200)
-NDF_FOREST = RandomForestClassifier(criterion='entropy', max_depth=None, max_features='auto', n_estimators=200,
+NDF_GRADIENT = GradientBoostingClassifier(n_estimators=100, max_features='auto', verbose=2, max_depth=10)
+NDF_FOREST = RandomForestClassifier(criterion='entropy', max_depth=10, max_features='auto', n_estimators=200,
                                     class_weight='balanced')
 NDF_SVM = SVC(gamma='auto', class_weight='balanced', C=1.1, degree=2, kernel='rbf')
 
-US_GRADIENT = GradientBoostingClassifier(learning_rate=None, max_depth=None, max_features=None, n_estimators=None)
+US_GRADIENT = GradientBoostingClassifier(learning_rate=0.08, max_depth=3, min_samples_split=2, max_features='auto',
+                                         n_estimators=150)
 US_FOREST = RandomForestClassifier(criterion=None, max_depth=None, max_features=None, n_estimators=None,
                                    class_weight=None)
 US_SVM = SVC(gamma=None, class_weight=None, C=None, degree=None, kernel=None)
 
+ABROAD_GRADIENT = GradientBoostingClassifier(learning_rate=0.01, max_depth=1, max_features=0.5,
+                                             max_leaf_nodes=3, min_samples_leaf=21, min_samples_split=3,
+                                             n_estimators=30)
+ABROAD_FOREST = RandomForestClassifier(criterion='gini', max_depth=10, max_features=0.5, max_leaf_nodes=30,
+                                       min_samples_leaf=21, min_samples_split=30, n_estimators=100,
+                                       class_weight='balanced', verbose=0)
+ABROAD_SVM = SVC(class_weight='balanced')
+
+MODELS_PATH = os.path.join(os.getcwd(), 'models')
+
 
 def elaborateOnlineActivityStatistics(users=None):
-    sessions = pd.read_csv(os.path.join(os.getcwd(), 'data', 'sessions.csv'))
-    sessions_users = mapDevices(sessions[sessions['user_id'].isin(users['id'])])
-    del sessions
-    sessions_users['min_elapsed'] = sessions_users['secs_elapsed'] / 60
-    sessions_users.drop(['secs_elapsed'], axis=1, inplace=True)
+    sessions = mapDevices(pd.read_csv(os.path.join(os.getcwd(), 'data', 'sessions.csv')))
+    sessions.replace('-unknown-', np.nan, inplace=True)
+    sessions.replace('untracked', np.nan, inplace=True)
+    sessions.dropna(subset=['secs_elapsed'], inplace=True)
 
-    pivot_sum_action_time = sessions_users.pivot_table(values='min_elapsed', index='user_id', columns='action_type',
-                                                       aggfunc='sum').fillna(0)
-    pivot_sum_action_time.columns = [x + '_total_time' for x in pivot_sum_action_time.columns]
-    pivot_sum_action_count = sessions_users.pivot_table(values='min_elapsed', index='user_id', columns='action_type',
-                                                        aggfunc='count').fillna(0)
-    pivot_sum_action_count.columns = [x + '_total_events' for x in pivot_sum_action_count.columns]
-    pivot_action_heterogeneity = sessions_users.pivot_table(values='action_type', index='user_id',
-                                                            aggfunc=lambda x: len(np.unique(x.astype(str))))
-    pivot_action_heterogeneity.columns = ['action_heterogeneity']
+    total_action = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='count').fillna(0)
+    nunique_a = sessions.pivot_table(values='action', index='user_id', aggfunc=pd.Series.nunique).fillna(0)
+    nunique_a_type = sessions.pivot_table(values='action_type', index='user_id', aggfunc=pd.Series.nunique).fillna(0)
+    nunique_a_det = sessions.pivot_table(values='action_detail', index='user_id', aggfunc=pd.Series.nunique).fillna(0)
+    nunique_device = sessions.pivot_table(values='device_type', index='user_id', aggfunc=pd.Series.nunique).fillna(0)
 
-    pivot_sum_device_time = sessions_users.pivot_table(values='min_elapsed', index='user_id', columns='device_type',
-                                                       aggfunc='sum').fillna(0)
-    pivot_sum_device_time.columns = [x + '_total_time' for x in pivot_sum_device_time.columns]
-    pivot_sum_device_count = sessions_users.pivot_table(values='min_elapsed', index='user_id', columns='device_type',
-                                                        aggfunc='count').fillna(0)
-    pivot_sum_device_count.columns = [x + '_total_events' for x in pivot_sum_device_count.columns]
-    pivot_device_heterogeneity = sessions_users.pivot_table(values='device_type', index='user_id',
-                                                            aggfunc=lambda x: len(np.unique(x.astype(str))))
-    pivot_device_heterogeneity.columns = ['device_heterogeneity']
+    action_frequency = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action'],
+                                            aggfunc='count').fillna(0)
+    action_detail_frequency = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action_detail'],
+                                                   aggfunc='count').fillna(0)
+    action_type_frequency = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action_type'],
+                                                 aggfunc='count').fillna(0)
+    device_type_frequency = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['device_type'],
+                                                 aggfunc='count').fillna(0)
 
-    users = users.merge(pivot_sum_action_time, how='inner', left_on='id', right_index=True)
-    users = users.merge(pivot_sum_action_count, how='inner', left_on='id', right_index=True)
-    users = users.merge(pivot_action_heterogeneity, how='inner', left_on='id', right_index=True)
-    users = users.merge(pivot_sum_device_time, how='inner', left_on='id', right_index=True)
-    users = users.merge(pivot_sum_device_count, how='inner', left_on='id', right_index=True)
-    users = users.merge(pivot_device_heterogeneity, how='inner', left_on='id', right_index=True)
+    sessions_total_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='sum').fillna(0)
+    sessions_median_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='median').fillna(0)
+    sessions_min_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='min').fillna(0)
+    sessions_max_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='max').fillna(0)
+
+    action_type_total_time = sessions.pivot_table(values='secs_elapsed', columns='action_type', index='user_id',
+                                                  aggfunc='sum').fillna(0)
+    action_type_median_time = sessions.pivot_table(values='secs_elapsed', columns='action_type', index='user_id',
+                                                   aggfunc='median').fillna(0)
+    action_type_min_time = sessions.pivot_table(values='secs_elapsed', columns='action_type', index='user_id',
+                                                aggfunc='min').fillna(0)
+    action_type_max_time = sessions.pivot_table(values='secs_elapsed', columns='action_type', index='user_id',
+                                                aggfunc='max').fillna(0)
+
+    device_type_total_time = sessions.pivot_table(values='secs_elapsed', columns='device_type', index='user_id',
+                                                  aggfunc='sum').fillna(0)
+    device_type_median_time = sessions.pivot_table(values='secs_elapsed', columns='device_type', index='user_id',
+                                                   aggfunc='median').fillna(0)
+    device_type_min_time = sessions.pivot_table(values='secs_elapsed', columns='device_type', index='user_id',
+                                                aggfunc='min').fillna(0)
+    device_type_max_time = sessions.pivot_table(values='secs_elapsed', columns='device_type', index='user_id',
+                                                aggfunc='max').fillna(0)
+
+    users = users.merge(total_action, how='left', left_on='id', right_index=True)
+    users = users.merge(nunique_a, how='left', left_on='id', right_index=True)
+    users = users.merge(nunique_a_type, how='left', left_on='id', right_index=True)
+    users = users.merge(nunique_a_det, how='left', left_on='id', right_index=True)
+    users = users.merge(nunique_device, how='left', left_on='id', right_index=True)
+    users = users.merge(action_frequency, how='left', left_on='id', right_index=True)
+    users = users.merge(action_detail_frequency, how='left', left_on='id', right_index=True)
+    users = users.merge(action_type_frequency, how='left', left_on='id', right_index=True)
+    users = users.merge(device_type_frequency, how='left', left_on='id', right_index=True)
+    users = users.merge(sessions_total_time, how='left', left_on='id', right_index=True)
+    users = users.merge(sessions_median_time, how='left', left_on='id', right_index=True)
+    users = users.merge(sessions_min_time, how='left', left_on='id', right_index=True)
+    users = users.merge(sessions_max_time, how='left', left_on='id', right_index=True)
+    users = users.merge(action_type_total_time, how='left', left_on='id', right_index=True)
+    users = users.merge(action_type_median_time, how='left', left_on='id', right_index=True)
+    users = users.merge(action_type_min_time, how='left', left_on='id', right_index=True)
+    users = users.merge(action_type_max_time, how='left', left_on='id', right_index=True)
+    users = users.merge(device_type_total_time, how='left', left_on='id', right_index=True)
+    users = users.merge(device_type_median_time, how='left', left_on='id', right_index=True)
+    users = users.merge(device_type_min_time, how='left', left_on='id', right_index=True)
+    users = users.merge(device_type_max_time, how='left', left_on='id', right_index=True)
 
     return users
+
+
+def categoricalMapping(users):
+    first_browser_dict = {'SeaMonkey': 'other',
+                          'Mozilla': 'other',
+                          'RockMelt': 'other',
+                          'IceDragon': 'other',
+                          'Opera Mini': 'other',
+                          'Googlebot': 'other',
+                          'Outlook 2007': 'other',
+                          'TenFourFox': 'other',
+                          'Avant Browser': 'other',
+                          'TheWorld Browser': 'other',
+                          'CoolNovo': 'other',
+                          'Iron': 'other',
+                          'Pale Moon': 'other',
+                          'IceWeasel': 'other',
+                          'Yandex.Browser': 'other',
+                          'SiteKiosk': 'other',
+                          'BlackBerry Browser': 'other',
+                          'Apple Mail': 'other',
+                          'Maxthon': 'other',
+                          'Sogou Explorer': 'other',
+                          'Mobile Firefox': 'other',
+                          'IE Mobile': 'other',
+                          'Chromium': 'other',
+                          'AOL Explorer': 'other',
+                          'Silk': 'other',
+                          'Opera': 'other',
+                          'Android Browser': 'Android Browser',
+                          'Chrome Mobile': 'Chrome Mobile',
+                          'IE': 'IE',
+                          'Mobile Safari': 'Mobile Safari',
+                          'Firefox': 'Firefox',
+                          'nan': 'nan',
+                          'Safari': 'Safari',
+                          'Chrome': 'Chrome'}
+    affiliate_provider_dict = {'daum': 'minority',
+                               'craigslist': 'minority',
+                               'meetup': 'minority',
+                               'baidu': 'minority',
+                               'yandex': 'minority',
+                               'naver': 'minority',
+                               'gsp': 'minority',
+                               'vast': 'minority',
+                               'facebook-open-graph': 'facebook-open-graph',
+                               'email-marketing': 'email-marketing',
+                               'yahoo': 'yahoo',
+                               'padmapper': 'padmapper',
+                               'facebook': 'facebook',
+                               'bing': 'bing',
+                               'other': 'other',
+                               'google': 'google',
+                               'direct': 'direct', }
+
+    df = users.copy()
+    df.loc[:, 'first_browser'] = df.loc[:, 'first_browser'].map(first_browser_dict)
+    df.loc[:, 'affiliate_povider'] = df.loc[:, 'affiliate_provider'].map(affiliate_provider_dict)
+
+    return df
 
 
 def mapDevices(sessions):
@@ -109,22 +218,53 @@ def mapDevices(sessions):
     return sessions
 
 
-def categoricalToPca(users):
-    categorical = ['gender', 'signup_method', 'signup_flow', 'language', 'affiliate_channel', 'affiliate_provider',
-                   'first_affiliate_tracked', 'signup_app', 'first_device_type', 'first_browser']
-    dummy_users = pd.get_dummies(users[categorical].fillna('nan'))
-    pca = PCA(3)
-    categoricalToPca = pd.DataFrame(pca.fit_transform(dummy_users))
+def categoricalTransformation(users, ohe=None):
+    categorical = ['gender','week_first_active','week_created', 'language', 'affiliate_channel', 'affiliate_provider', 'first_affiliate_tracked',
+                   'signup_app', 'first_device_type', 'first_browser']
+    users_mapped = categoricalMapping(users)
+    if ohe is None:
+        ohe = OneHotEncoder(sparse=False, handle_unknown='ignore')
+        dummy_users = pd.DataFrame(ohe.fit_transform(users_mapped[categorical].fillna('nan')), index=users.index)
+        with open(os.path.join(MODELS_PATH, 'ohe.bin'), 'wb') as ohe_file:
+            pickle.dump(ohe, ohe_file)
+            ohe_file.close()
+    else:
+        dummy_users = pd.DataFrame(ohe.transform(users_mapped[categorical].fillna('nan')), index=users.index)
 
-    return categoricalToPca
+    return ohe, dummy_users
+
+
+def numericalToPca(users, pca=None, ss=None):
+    if ss is None:
+        ss = StandardScaler()
+        users_standardized = np.array(users)
+        with open(os.path.join(MODELS_PATH, 'ss_numerical_encoding.bin'), 'wb') as f:
+            pickle.dump(ss, f)
+            f.close()
+    else:
+        users_standardized = np.array(users)
+
+    if pca is None:
+        pca = PCA(360)
+        numerical_to_pca = pd.DataFrame(np.array(users_standardized), index=users.index)
+        with open(os.path.join(MODELS_PATH, 'pca_numerical_encoding.bin'), 'wb') as f:
+            pickle.dump(pca, f)
+            f.close()
+    else:
+        numerical_to_pca = pd.DataFrame(np.array(users_standardized), index=users.index)
+
+    return ss, pca, numerical_to_pca
 
 
 def fitAndSaveTrees(X_train, y_train, model, model_name, resample=False):
     if resample:
-        resampler = SMOTE()
+        resampler = over_sampling.BorderlineSMOTE(kind='borderline-2')
         X_train_r, y_train_r = resampler.fit_resample(X_train, y_train)
 
-    model.fit(X_train_r, y_train_r)
+        model.fit(X_train_r, y_train_r)
+    else:
+        model.fit(X_train, y_train)
+
     with open(os.path.join(os.getcwd(), 'models', model_name + r'.bin'), 'wb') as model_file:
         pickle.dump(model, model_file)
         model_file.close()
@@ -132,14 +272,20 @@ def fitAndSaveTrees(X_train, y_train, model, model_name, resample=False):
     return model
 
 
-def fitAndSaveSVM(X_train, y_train, model, model_name):
+def fitAndSaveSVM(X_train, y_train, model, model_name, resample=False):
     mms = MinMaxScaler()
     X_train_scaled = mms.fit_transform(X_train)
 
-    resampler = SMOTE()
-    X_train_r, y_train_r = resampler.fit_resample(X_train_scaled, y_train)
+    if resample:
 
-    model.fit(X_train_r, y_train_r)
+        resampler = SMOTE()
+        X_train_r, y_train_r = resampler.fit_resample(X_train_scaled, y_train)
+
+        model.fit(X_train_r, y_train_r)
+
+    else:
+        model.fit(X_train_scaled, y_train)
+
     with open(os.path.join(os.getcwd(), 'models', model_name + r'.bin'), 'wb') as model_file:
         pickle.dump(model, model_file)
         model_file.close()
@@ -159,14 +305,68 @@ def loadFitModel(model_name):
     return model
 
 
-def multiModelPrediction(users, ndf_model, us_model, countries_model, scaler):
-    users['NDF_prob'] = ndf_model.predict_proba(users)
-    users['US_prob'] = us_model.predict_proba(users)
-    users[['', '', '', '', '', '', '', '', '', '']] = countries_model.predict(users)
+def multiModelPrediction(users):
+    countries = {0: 'NDF', 1: 'US', 2: 'AU', 3: 'CA', 4: 'DE', 5: 'ES', 6: 'FR', 7: 'GB', 8: 'IT', 9: 'NL', 10: 'PT',
+                 11: 'other'}
+
+    with open(os.path.join(MODELS_PATH, 'NDF_OVR.bin'), 'rb') as f:
+        ndf = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'US_OVR.bin'), 'rb') as f:
+        us = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'AU_OVR.bin'), 'rb') as f:
+        au = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'CA_OVR.bin'), 'rb') as f:
+        ca = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'DE_OVR.bin'), 'rb') as f:
+        de = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'ES_OVR.bin'), 'rb') as f:
+        es = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'FR_OVR.bin'), 'rb') as f:
+        fr = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'GB_OVR.bin'), 'rb') as f:
+        gb = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'IT_OVR.bin'), 'rb') as f:
+        it = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'NL_OVR.bin'), 'rb') as f:
+        nl = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'PT_OVR.bin'), 'rb') as f:
+        pt = pickle.load(f)
+        f.close()
+    with open(os.path.join(MODELS_PATH, 'other_OVR.bin'), 'rb') as f:
+        other = pickle.load(f)
+        f.close()
+
+    predictions_prob = np.column_stack((ndf.predict_proba(users)[:, 1],
+                                        us.predict_proba(users)[:, 1],
+                                        au.predict_proba(users)[:, 1],
+                                        ca.predict_proba(users)[:, 1],
+                                        de.predict_proba(users)[:, 1],
+                                        es.predict_proba(users)[:, 1],
+                                        fr.predict_proba(users)[:, 1],
+                                        gb.predict_proba(users)[:, 1],
+                                        it.predict_proba(users)[:, 1],
+                                        nl.predict_proba(users)[:, 1],
+                                        pt.predict_proba(users)[:, 1],
+                                        other.predict_proba(users)[:, 1]))
+
+    predictions = pd.Series(np.argmax(predictions_prob, axis=1)).map(countries)
+    ndf_prediction = predictions
+
+    return ndf_prediction
 
 
 def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_country=None, normalizer=None, model=None,
-             parameters=None, resampler=None, scoring_metric='f1', model_name=None):
+             parameters=None, resampler=None, scoring_metric=None, model_name=None):
     if normalizer is not None:
         X_train = normalizer.fit_transform(X_train)
         X_test = normalizer.transform(X_test)
@@ -183,86 +383,81 @@ def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_countr
                            '%s_%s_cross_validation_log.txt' % (model_name, target_country)), 'a') as logging_file:
         logging_file.write(model_name + ' - ' + 'TARGET COUNTRY: %s \n' % target_country)
         logging_file.write(str(gs.best_params_) + '\n')
-        logging_file.write('Best F1 - ' + str(gs.best_score_) + '\n')
+        logging_file.write('Best score - ' + str(gs.best_score_) + '\n')
         logging_file.write('Training Confusion Matrix\n%s\n' % confusion_matrix(y_train, gs.predict(X_train)))
         logging_file.write('Test Confusion Matrix\n%s\n' % confusion_matrix(y_test, gs.predict(X_test)))
-        logging_file.write('Test - F1 score\n%s \n\n' % f1_score(y_test, gs.predict(X_test), average=(
-            lambda x: 'weighted' if x == 'f1_weighted' else None)(scoring_metric)))
+        logging_file.write('Test - score\n%s \n\n' % roc_auc_score(y_test, gs.predict_proba(X_test)[:, 1]))
         logging_file.close()
     return
 
-if __name__ == '__main__':
-    # '''CREATE FULL DF'''
-    # train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
-    # train_users.drop('age', axis=1, inplace=True)
-    # categorical_cols_encoded = categoricalToPca(train_users)
-    # users = pd.concat((train_users[['id', 'country_destination']], categorical_cols_encoded), axis=1)
-    # full_df = elaborateOnlineActivityStatistics(users)
 
-    # '''SAVE FULL DF'''
-    # with open('full_df','wb') as f:
-    #     pickle.dump(full_df,f)
+if __name__ == '__main__':
+    # users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
+
+    ''' AGE FIXING '''
+    # users.replace('-unknown-', np.nan, inplace=True)
+    # age = np.array(users.age)
+    # np.place(age, age >= 110, np.nan)
+    # np.place(age, age <= 14, np.nan)
+    # np.place(age, age >= 80, 80)
+    # users.loc[:, 'age'] = age
+    # users.age.fillna(users.age.median(), inplace=True)
+
+    ''' DATETIME ENGINEERING '''
+    # users.loc[:, 'timestamp_first_active'] = pd.to_datetime(users['timestamp_first_active'].astype(str).str[:8])
+    # users.loc[:, 'date_account_created'] = pd.to_datetime(users['date_account_created'])
+    # users.insert(1, 'time_gap_after_creation', (users.timestamp_first_active - users.date_account_created).dt.days)
+    # users.insert(1, 'week_created', users.loc[:, 'date_account_created'].dt.week)
+    # users.insert(1, 'week_first_active', users.loc[:, 'timestamp_first_active'].dt.week)
+    # users.drop(['date_account_created', 'timestamp_first_active','date_first_booking'], axis=1, inplace=True)
+
+    ''' SESSIONS STATISTICS '''
+    # users_session = elaborateOnlineActivityStatistics(users)
+
+    ''' CREATE TRAIN/TEST DATASETS  '''
+    # Y = np.array(users_session['country_destination'])
+    # train_df, test_df, _, _ = train_test_split(users_session, Y, test_size=0.10, random_state=42)
+    # ohe, train_categorical_cols_encoded = categoricalTransformation(train_df, ohe=None)
+    # train_df = pd.concat(
+    #     (train_df[['id', 'country_destination', 'age','time_gap_after_creation']], train_df.iloc[:, 16:].fillna(0), train_categorical_cols_encoded), axis=1)
+    # _, test_categorical_cols_encoded = categoricalTransformation(test_df, ohe=ohe)
+    # test_df = pd.concat(
+    #     (test_df[['id', 'country_destination', 'age','time_gap_after_creation']], test_df.iloc[:, 16:].fillna(0), test_categorical_cols_encoded),
+    #     axis=1)
+
+    '''SAVE TRAIN/TEST DF'''
+    # with open('train', 'wb') as f:
+    #     pickle.dump(train_df, f)
+    #     f.close()
+    # with open('test', 'wb') as f:
+    #     pickle.dump(test_df, f)
     #     f.close()
 
-    '''LOAD FULL DF'''
-    with open('full_df', 'rb') as f:
-        full_df = pickle.load(f)
+    '''LOAD TRAIN/TEST DF'''
+    with open('train', 'rb') as f:
+        train_df = pickle.load(f)
+        y_train = np.array(train_df['country_destination'])
+        X_train = train_df.iloc[:, 2:]
+        f.close()
+    with open('test', 'rb') as f:
+        test_df = pickle.load(f)
+        y_test = np.array(test_df['country_destination'])
+        X_test = test_df.iloc[:, 2:]
         f.close()
 
-    Y = np.array(full_df['country_destination'])
-    X = full_df.iloc[:, 2:]
-    X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.20, random_state=42)
+    ''' REMOVE 0 VARIANCE COLUMNS'''
+    vt = VarianceThreshold()
+    X_train = vt.fit_transform(X_train)
+    X_test = vt.transform(X_test)
 
-    # '''VALIDATION NDF'''
-    # y_train_ndf = (y_train == 'NDF').astype(int)
-    # y_test_ndf = (y_test == 'NDF').astype(int)
-    # model = 2  # 0:GradientBoosting; 1:RandomForest; 2:SVM
-    # validate(X_train=X_train, y_train=y_train_ndf, X_test=X_test, y_test=y_test_ndf, target_country='NDF',
-    #          normalizer=mms, model=MODELS[model], parameters=PARAMETERS[model],
-    #          resampler=None, model_name=NAMES[model],scoring_metric = 'f1')
+    ''' CROSS VALIDATION'''
+    model = XGBClassifier(verbosity=2, n_estimators=100)
 
-    # '''FIT AND SAVE MODELS WITH VALIDATED PARAMETERS FOR NDF'''
-    # y_train_ndf = (y_train == 'NDF').astype(int)
-    # ndf_gradient = fitAndSaveTrees(X_train,y_train_ndf,NDF_GRADIENT,'ndfgradient')
-    # ndf_forest = fitAndSaveTrees(X_train,y_train_ndf,NDF_FOREST,'ndfforest')
-    # ndf_svm = fitAndSaveSVM(X_train, y_train_ndf, NDF_SVM, 'ndfsvm')
+    model.fit(X_train, y_train)
+    pred = model.predict(X_test)
+    print(confusion_matrix(y_test, pred))
+    print(accuracy_score(y_test, pred))
+    print(balanced_accuracy_score(y_test, pred, adjusted=True))
 
-    # '''VALIDATION US'''
-    # X_train_booked = X_train[y_train != 'NDF']
-    # y_train_booked = y_train[y_train != 'NDF']
-    # X_test_booked = X_test[y_test != 'NDF']
-    # y_test_booked = y_test[y_test != 'NDF']
-    # y_train_us = (y_train_booked == 'US').astype(int)
-    # y_test_us = (y_test_booked == 'US').astype(int)
-    # model = 2
-    # validate(X_train=X_train_booked, y_train=y_train_us, X_test=X_test_booked, y_test=y_test_us, target_country='US',
-    #          normalizer=mms, model=MODELS[model], parameters=PARAMETERS[model],
-    #          resampler=None, model_name=NAMES[model],scoring_metric = 'f1')
-
-    # '''FIT AND SAVE MODELS WITH VALIDATED PARAMETERS FOR US'''
-    # X_train_booked = X_train[y_train != 'NDF']
-    # y_train_booked = y_train[y_train != 'NDF']
-    # y_train_us = (y_train_booked == 'US').astype(int)
-    # us_gradient = fitAndSaveTrees(X_train_booked,y_train_us,NDF_GRADIENT,'usgradient')
-    # us_forest = fitAndSaveTrees(X_train_booked,y_train_us,NDF_FOREST,'usforest')
-    # us_svm = fitAndSaveSVM(X_train_booked, y_train_us, NDF_SVM, 'ussvm')
-
-    '''VALIDATION BOOKED ABROAD'''
-    train_mask = np.logical_and(y_train != 'NDF', y_train != 'US')
-    test_mask = np.logical_and(y_test != 'NDF', y_test != 'US')
-    X_train_abroad = X_train[train_mask]
-    X_test_abroad = X_test[test_mask]
-    y_train_abroad = y_train[train_mask]
-    y_test_abroad = y_test[test_mask]
-    model = 0
-    validate(X_train=X_train_abroad, y_train=y_train_abroad, X_test=X_test_abroad, y_test=y_test_abroad,
-             target_country='ABROAD', normalizer=None, model=MODELS[model], parameters=PARAMETERS[model],
-             resampler=None, model_name=NAMES[model], scoring_metric='f1_weighted')
-
-    # '''FIT AND SAVE MODELS WITH VALIDATED PARAMETERS FOR BOOKED ABROAD'''
-    # train_mask = np.logical_and(y_train != 'NDF', y_train != 'US')
-    # X_train_abroad = X_train[train_mask]
-    # y_train_abroad = y_train[train_mask]
-    # abroad_gradient = fitAndSaveTrees(X_train_abroad, y_train_abroad, NDF_GRADIENT, 'abroadgradient')
-    # abroad_forest = fitAndSaveTrees(X_train_abroad, y_train_abroad, NDF_FOREST, 'abroadforest')
-    # abroad_svm = fitAndSaveSVM(X_train_abroad, y_train_abroad, NDF_SVM, 'abroadsvm')
+    # prediction = multiModelPrediction(X_test)
+    # print(balanced_accuracy_score(y_test, prediction, adjusted=True))

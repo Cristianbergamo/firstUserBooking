@@ -3,6 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import altair
 
 pd.set_option('display.max_rows', 2000)
 pd.set_option('display.max_columns', 500)

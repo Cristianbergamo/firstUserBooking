@@ -1,0 +1,12 @@
+RANDOMFOREST - TARGET COUNTRY: NDF 
+{'criterion': 'entropy', 'max_depth': 10, 'max_features': 'auto', 'n_estimators': 200}
+Best score - 0.7856927132695589
+Training Confusion Matrix
+[[15790  7163]
+ [ 7165 28973]]
+Test Confusion Matrix
+[[3879 1941]
+ [1980 6921]]
+Test - score
+0.7809749492213948 
+

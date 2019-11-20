@@ -1,0 +1,12 @@
+SVM - TARGET COUNTRY: NDF 
+{'C': 1.1, 'degree': 2, 'kernel': 'rbf'}
+Best F1 - 0.7741749590330029
+Training Confusion Matrix
+[[11615 11469]
+ [ 5932 30033]]
+Test Confusion Matrix
+[[2810 2879]
+ [1485 7589]]
+Test - F1 score
+0.776686111963975 
+
