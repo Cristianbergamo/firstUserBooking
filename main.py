@@ -8,17 +8,17 @@ from imblearn import over_sampling
 from sklearn.decomposition import PCA
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.feature_selection import VarianceThreshold
+from sklearn.metrics import balanced_accuracy_score
 from sklearn.metrics import confusion_matrix
-from sklearn.metrics import roc_auc_score, balanced_accuracy_score, accuracy_score
 from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, OneHotEncoder
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, OneHotEncoder, LabelEncoder
 from sklearn.svm import SVC
+from xgboost.sklearn import XGBClassifier
+from sklearn.multiclass import OneVsOneClassifier
 
 pd.set_option('display.max_rows', 2000)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
-from xgboost.sklearn import XGBClassifier
 
 MMS = MinMaxScaler()
 
@@ -219,8 +219,8 @@ def mapDevices(sessions):
 
 
 def categoricalTransformation(users, ohe=None):
-    categorical = ['gender','week_first_active','week_created', 'language', 'affiliate_channel', 'affiliate_provider', 'first_affiliate_tracked',
-                   'signup_app', 'first_device_type', 'first_browser']
+    categorical = ['gender', 'language', 'affiliate_channel', 'affiliate_provider',
+                   'first_affiliate_tracked', 'signup_app', 'first_device_type', 'first_browser']
     users_mapped = categoricalMapping(users)
     if ohe is None:
         ohe = OneHotEncoder(sparse=False, handle_unknown='ignore')
@@ -365,8 +365,8 @@ def multiModelPrediction(users):
     return ndf_prediction
 
 
-def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_country=None, normalizer=None, model=None,
-             parameters=None, resampler=None, scoring_metric=None, model_name=None):
+def validate(X_train=None, y_train=None, X_test=None, y_test=None, target=None, normalizer=None, model=None,
+             parameters=None, resampler=None, model_name=None):
     if normalizer is not None:
         X_train = normalizer.fit_transform(X_train)
         X_test = normalizer.transform(X_test)
@@ -377,16 +377,16 @@ def validate(X_train=None, y_train=None, X_test=None, y_test=None, target_countr
         X_train = X_train_r[shuffled_index]
         y_train = y_train_r[shuffled_index]
 
-    gs = GridSearchCV(model, parameters, cv=5, verbose=2, scoring=scoring_metric, iid=False, refit=True)
+    gs = GridSearchCV(model, parameters, cv=3, verbose=2, scoring='balanced_accuracy', iid=False, refit=True, n_jobs=4)
     gs.fit(X_train, y_train)
     with open(os.path.join(os.getcwd(), 'validationLogs',
-                           '%s_%s_cross_validation_log.txt' % (model_name, target_country)), 'a') as logging_file:
-        logging_file.write(model_name + ' - ' + 'TARGET COUNTRY: %s \n' % target_country)
+                           '%s_%s_cross_validation_log.txt' % (model_name, target)), 'a') as logging_file:
+        logging_file.write(model_name + ' - ' + 'TARGET: %s \n' % target)
         logging_file.write(str(gs.best_params_) + '\n')
         logging_file.write('Best score - ' + str(gs.best_score_) + '\n')
         logging_file.write('Training Confusion Matrix\n%s\n' % confusion_matrix(y_train, gs.predict(X_train)))
         logging_file.write('Test Confusion Matrix\n%s\n' % confusion_matrix(y_test, gs.predict(X_test)))
-        logging_file.write('Test - score\n%s \n\n' % roc_auc_score(y_test, gs.predict_proba(X_test)[:, 1]))
+        logging_file.write('Test - score\n%s \n\n' % balanced_accuracy_score(y_test, gs.predict(X_test), adjusted=True))
         logging_file.close()
     return
 
@@ -409,7 +409,7 @@ if __name__ == '__main__':
     # users.insert(1, 'time_gap_after_creation', (users.timestamp_first_active - users.date_account_created).dt.days)
     # users.insert(1, 'week_created', users.loc[:, 'date_account_created'].dt.week)
     # users.insert(1, 'week_first_active', users.loc[:, 'timestamp_first_active'].dt.week)
-    # users.drop(['date_account_created', 'timestamp_first_active','date_first_booking'], axis=1, inplace=True)
+    # users.drop(['date_account_created', 'date_first_booking'], axis=1, inplace=True)
 
     ''' SESSIONS STATISTICS '''
     # users_session = elaborateOnlineActivityStatistics(users)
@@ -419,10 +419,12 @@ if __name__ == '__main__':
     # train_df, test_df, _, _ = train_test_split(users_session, Y, test_size=0.10, random_state=42)
     # ohe, train_categorical_cols_encoded = categoricalTransformation(train_df, ohe=None)
     # train_df = pd.concat(
-    #     (train_df[['id', 'country_destination', 'age','time_gap_after_creation']], train_df.iloc[:, 16:].fillna(0), train_categorical_cols_encoded), axis=1)
+    #     (train_df[['id', 'country_destination', 'timestamp_first_active', 'time_gap_after_creation','week_first_active','week_created','age','signup_flow']],
+    #      train_categorical_cols_encoded, train_df.iloc[:, 17:].fillna(0)), axis=1)
     # _, test_categorical_cols_encoded = categoricalTransformation(test_df, ohe=ohe)
     # test_df = pd.concat(
-    #     (test_df[['id', 'country_destination', 'age','time_gap_after_creation']], test_df.iloc[:, 16:].fillna(0), test_categorical_cols_encoded),
+    #     (test_df[['id', 'country_destination', 'timestamp_first_active', 'time_gap_after_creation', 'week_first_active','week_created','age','signup_flow']],
+    #      test_categorical_cols_encoded, test_df.iloc[:, 17:].fillna(0)),
     #     axis=1)
 
     '''SAVE TRAIN/TEST DF'''
@@ -444,20 +446,142 @@ if __name__ == '__main__':
         y_test = np.array(test_df['country_destination'])
         X_test = test_df.iloc[:, 2:]
         f.close()
+    le = LabelEncoder()
+    y_train = le.fit_transform(y_train)
+    y_test = le.transform(y_test)
 
-    ''' REMOVE 0 VARIANCE COLUMNS'''
-    vt = VarianceThreshold()
-    X_train = vt.fit_transform(X_train)
-    X_test = vt.transform(X_test)
+    ''' SPLIT Xs INTO SESSION/NO SESSIONS '''
+    vt1 = VarianceThreshold()
+    vt2 = VarianceThreshold()
+    train_mask2014 = np.array(X_train.timestamp_first_active > pd.datetime(2013, 12, 31))
+    test_mask2014 = np.array(X_test.timestamp_first_active > pd.datetime(2013, 12, 31))
+    X_train_sessions = vt1.fit_transform(X_train[train_mask2014].iloc[:, [i for i in range(4, 683)]])
+    X_test_sessions = vt1.transform(X_test.iloc[:, [i for i in range(4, 683)]])
+    X_train_no_sessions = vt2.fit_transform(X_train.iloc[:, [i for i in range(1, 91)]])
+    X_test_no_sessions = vt2.transform(X_test.iloc[:, [i for i in range(1, 91)]])
 
-    ''' CROSS VALIDATION'''
-    model = XGBClassifier(verbosity=2, n_estimators=100)
+    ''' CROSS VALIDATION 2014 ONLY'''
+    # estimator = XGBClassifier()
+    # param_grid = {'n_estimators': [100],
+    #               'objective': ['multi:softprob'],
+    #               'learning_rate': [0.05, 0.1, 0.15],
+    #               'min_child_weigth': [1, 2, 4, 8],
+    #               'max_depth': [3, 6, 13, 21],
+    #               'gamma': [0, 0.1, 0.2, 0.4, 0.8],
+    #               'max_delta_step': [0, 1, 2, 4, 8],
+    #               'subsample': [0.8, 0.9, 1],
+    #               'colsample_bytree': [0.5, 0.8, 1],
+    #               'reg_lambda': [1, 2, 4],
+    #               'scale_pos_weight': [0.1, 0.2, 0.4, 0.8, 1]
+    #               }
 
-    model.fit(X_train, y_train)
-    pred = model.predict(X_test)
-    print(confusion_matrix(y_test, pred))
-    print(accuracy_score(y_test, pred))
-    print(balanced_accuracy_score(y_test, pred, adjusted=True))
+    # param_grid = {'n_estimators': [100],
+    #               'objective': ['multi:softprob'],
+    #               'learning_rate': [0.05, 0.15],
+    #               'min_child_weigth': [1, 8],
+    #               'max_depth': [3, 21],
+    #               'gamma': [0.1, 0.8],
+    #               'max_delta_step': [0, 8],
+    #               'subsample': [0.8, 1],
+    #               'colsample_bytree': [0.5, 1],
+    #               'reg_lambda': [1, 4],
+    #               'scale_pos_weight': [0.1, 1]
+    #               }
+    #
+    # validate(model=estimator, X_train=X_train_sessions, y_train=y_train[train_mask2014], target='2014',
+    #          model_name='XGBOOST', X_test=X_test_sessions[test_mask2014], y_test=y_test[test_mask2014],
+    #          parameters=param_grid)
 
-    # prediction = multiModelPrediction(X_test)
-    # print(balanced_accuracy_score(y_test, prediction, adjusted=True))
+
+    ''' 2Ways SOLUTION'''
+    # session_model = XGBClassifier(n_estimators=100, max_depth=10,objective='multi:softprob',n_jobs=-1)
+    # session_model.fit(X_train_sessions, y_train[train_mask2014])
+    # session_proba = session_model.predict_proba(X_test_sessions[test_mask2014])
+
+    # no_session_model = XGBClassifier(n_estimators=5, max_depth=3)
+    # no_session_model.fit(X_train_no_sessions, y_train)
+    # no_session_proba = no_session_model.predict_proba(X_test_no_sessions)
+
+    # session_weight = len(X_train_sessions) / float(len(X_train))
+    # no_session_weight = 1. - session_weight
+
+    # prediciton_proba_sessions = (session_proba * session_weight) + (no_session_proba[test_mask2014] * no_session_weight)
+    # prediciton_proba_no_sessions = no_session_proba[~test_mask2014]
+    # prediction_proba = np.concatenate((prediciton_proba_no_sessions, prediciton_proba_sessions), axis=0)
+    # prediction = np.argmax(prediction_proba, axis=1)
+
+    # y_test_reindexed = np.concatenate((y_test[~test_mask2014], y_test[test_mask2014]))
+    # print(confusion_matrix(y_test_reindexed, prediction))
+    # print(balanced_accuracy_score(y_test_reindexed, prediction, adjusted=True))
+    # print(accuracy_score(y_test_reindexed, prediction))
+
+    ''' analysis of single models - part of 2ways analysis'''
+    # predicted_session = session_model.predict(X_test_sessions[test_mask2014])
+    # print(confusion_matrix(y_test[test_mask2014], predicted_session))
+    # print(balanced_accuracy_score(y_test[test_mask2014], predicted_session, adjusted=True))
+    # print(accuracy_score(y_test[test_mask2014], predicted_session))
+
+    # predicted_no_session = no_session_model.predict(X_test_no_sessions)
+    # print(confusion_matrix(y_test, predicted_no_session))
+    # print(balanced_accuracy_score(y_test, predicted_no_session, adjusted=True))
+    # print(accuracy_score(y_test, predicted_no_session))
+
+    '''cross validation single country for OVR'''
+    # estimator = XGBClassifier()
+    # y_train_country = (le.inverse_transform(y_train) == 'DE').astype(int)
+    # y_test_country = (le.inverse_transform(y_test) == 'DE').astype(int)
+    # param_grid = {'n_estimators': [100],
+    #               'objective': ['binary:logistic'],
+    #               'learning_rate': [0.05, 0.15],
+    #               'min_child_weigth': [1, 8],
+    #               'max_depth': [3, 21],
+    #               'gamma': [0.1, 0.8],
+    #               'max_delta_step': [0, 8],
+    #               'subsample': [0.8, 1],
+    #               'colsample_bytree': [0.5, 1],
+    #               'reg_lambda': [1, 4],
+    #               'scale_pos_weight': [0.1, 1]
+    #               }
+    # validate(X_train_no_sessions, y_train_country, X_test_no_sessions, y_test_country, 'DE', None, estimator, param_grid,
+    #          None, 'OVR_XGB_NOSESSION')
+
+    '''cross validation single country for OVO'''
+    estimator = XGBClassifier()
+    y_train_countries = le.inverse_transform(y_train)
+    y_test_countries = le.inverse_transform(y_test)
+    de_es_mask_train = np.isin(y_train_countries, ['DE', 'NDF'])
+    de_es_mask_test = np.isin(y_test_countries, ['DE', 'NDF'])
+    y_train_bool = (y_train_countries[de_es_mask_train] == 'DE').astype(int)
+    y_test_bool = (y_test_countries[de_es_mask_test] == 'DE').astype(int)
+    param_grid = {'n_estimators': [100],
+                  'objective': ['binary:logistic'],
+                  'learning_rate': [0.05, 0.15],
+                  'min_child_weigth': [1, 8],
+                  'max_depth': [3, 21],
+                  'gamma': [0.1, 0.8],
+                  'max_delta_step': [0, 8],
+                  'subsample': [0.8, 1],
+                  'colsample_bytree': [0.5, 1],
+                  'reg_lambda': [1, 4],
+                  'scale_pos_weight': [0.1, 1]
+                  }
+    validate(X_train_no_sessions[de_es_mask_train], y_train_bool,
+             X_test_no_sessions[de_es_mask_test], y_test_bool, 'DE', None,
+             estimator, param_grid, None, 'OVO_XGB_NOSESSIONS')
+
+    ''' OVO SESSION FIT '''
+    # estimator = XGBClassifier(n_estimators=100,objective='binary:logistic',learning_rate=0.15,min_child_weight=1,
+    #                           max_depth=21,gamma=0.8,max_delta_step=0,subsample=1,colsample_bytree=0.4,reg_lambda=4,
+    #                           scale_pos_weight=1.1,verbosity = 2)
+    # model = OneVsOneClassifier(estimator = estimator,n_jobs=4)
+    # model.fit(X_train_sessions,y_train[train_mask2014])
+    # with open('ovo_sessions.bin','wb') as f:
+    #     pickle.dump(model,f)
+    #     f.close()
+    # prediction = model.predict(X_test_sessions[test_mask2014])
+    # print(confusion_matrix(y_test[test_mask2014],prediction))
+    # print(balanced_accuracy_score(y_test[test_mask2014],prediction))
+
+# TODO: provare cross validation per no session
+# TODO: valutare risultati cross validation ovr session e se in caso affinare la param grids
+# TODO: ripetere il  procedimento fatto per OVR anche per OVO
