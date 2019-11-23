@@ -5,16 +5,16 @@ import random
 import numpy as np
 import pandas as pd
 from imblearn import over_sampling
+from imblearn.under_sampling import NeighbourhoodCleaningRule,TomekLinks,RepeatedEditedNearestNeighbours,InstanceHardnessThreshold
 from sklearn.decomposition import PCA
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import balanced_accuracy_score
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import GridSearchCV
-from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, OneHotEncoder, LabelEncoder
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, OneHotEncoder
 from sklearn.svm import SVC
 from xgboost.sklearn import XGBClassifier
-from sklearn.multiclass import OneVsOneClassifier
 
 pd.set_option('display.max_rows', 2000)
 pd.set_option('display.max_columns', 500)
@@ -74,65 +74,41 @@ def elaborateOnlineActivityStatistics(users=None):
     sessions.replace('untracked', np.nan, inplace=True)
     sessions.dropna(subset=['secs_elapsed'], inplace=True)
 
-    total_action = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='count').fillna(0)
-    nunique_a = sessions.pivot_table(values='action', index='user_id', aggfunc=pd.Series.nunique).fillna(0)
-    nunique_a_type = sessions.pivot_table(values='action_type', index='user_id', aggfunc=pd.Series.nunique).fillna(0)
-    nunique_a_det = sessions.pivot_table(values='action_detail', index='user_id', aggfunc=pd.Series.nunique).fillna(0)
-    nunique_device = sessions.pivot_table(values='device_type', index='user_id', aggfunc=pd.Series.nunique).fillna(0)
+    '''Statistiche per utente'''
+    total_action = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='count')
+    nunique_a = sessions.pivot_table(values='action', index='user_id', aggfunc=pd.Series.nunique)
+    nunique_a_type = sessions.pivot_table(values='action_type', index='user_id', aggfunc=pd.Series.nunique)
+    nunique_a_det = sessions.pivot_table(values='action_detail', index='user_id', aggfunc=pd.Series.nunique)
+    nunique_device = sessions.pivot_table(values='device_type', index='user_id', aggfunc=pd.Series.nunique)
+    total_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='sum')
 
-    action_frequency = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action'],
-                                            aggfunc='count').fillna(0)
-    action_detail_frequency = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action_detail'],
-                                                   aggfunc='count').fillna(0)
-    action_type_frequency = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action_type'],
-                                                 aggfunc='count').fillna(0)
-    device_type_frequency = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['device_type'],
-                                                 aggfunc='count').fillna(0)
+    '''Statistiche per singolo actionType_device'''
+    sessions['action_type_on_device'] = sessions['action_type'].astype(str) + '_' + sessions['device_type'].astype(str)
+    total_actions_ad = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action_type_on_device'],
+                                            aggfunc='count')
+    total_time_ad = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action_type_on_device'],
+                                         aggfunc='sum')
+    avg_time_ad = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action_type_on_device'],
+                                       aggfunc='mean')
+    std_time_ad = sessions.pivot_table(values='secs_elapsed', index='user_id', columns=['action_type_on_device'],
+                                       aggfunc='std')
+    nunique_a_ad = sessions.pivot_table(values='action', index='user_id', columns=['action_type_on_device'],
+                                        aggfunc=pd.Series.nunique)
+    nunique_a_det_ad = sessions.pivot_table(values='action_detail', index='user_id', columns=['action_type_on_device'],
+                                            aggfunc=pd.Series.nunique)
 
-    sessions_total_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='sum').fillna(0)
-    sessions_median_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='median').fillna(0)
-    sessions_min_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='min').fillna(0)
-    sessions_max_time = sessions.pivot_table(values='secs_elapsed', index='user_id', aggfunc='max').fillna(0)
-
-    action_type_total_time = sessions.pivot_table(values='secs_elapsed', columns='action_type', index='user_id',
-                                                  aggfunc='sum').fillna(0)
-    action_type_median_time = sessions.pivot_table(values='secs_elapsed', columns='action_type', index='user_id',
-                                                   aggfunc='median').fillna(0)
-    action_type_min_time = sessions.pivot_table(values='secs_elapsed', columns='action_type', index='user_id',
-                                                aggfunc='min').fillna(0)
-    action_type_max_time = sessions.pivot_table(values='secs_elapsed', columns='action_type', index='user_id',
-                                                aggfunc='max').fillna(0)
-
-    device_type_total_time = sessions.pivot_table(values='secs_elapsed', columns='device_type', index='user_id',
-                                                  aggfunc='sum').fillna(0)
-    device_type_median_time = sessions.pivot_table(values='secs_elapsed', columns='device_type', index='user_id',
-                                                   aggfunc='median').fillna(0)
-    device_type_min_time = sessions.pivot_table(values='secs_elapsed', columns='device_type', index='user_id',
-                                                aggfunc='min').fillna(0)
-    device_type_max_time = sessions.pivot_table(values='secs_elapsed', columns='device_type', index='user_id',
-                                                aggfunc='max').fillna(0)
-
-    users = users.merge(total_action, how='left', left_on='id', right_index=True)
-    users = users.merge(nunique_a, how='left', left_on='id', right_index=True)
-    users = users.merge(nunique_a_type, how='left', left_on='id', right_index=True)
-    users = users.merge(nunique_a_det, how='left', left_on='id', right_index=True)
-    users = users.merge(nunique_device, how='left', left_on='id', right_index=True)
-    users = users.merge(action_frequency, how='left', left_on='id', right_index=True)
-    users = users.merge(action_detail_frequency, how='left', left_on='id', right_index=True)
-    users = users.merge(action_type_frequency, how='left', left_on='id', right_index=True)
-    users = users.merge(device_type_frequency, how='left', left_on='id', right_index=True)
-    users = users.merge(sessions_total_time, how='left', left_on='id', right_index=True)
-    users = users.merge(sessions_median_time, how='left', left_on='id', right_index=True)
-    users = users.merge(sessions_min_time, how='left', left_on='id', right_index=True)
-    users = users.merge(sessions_max_time, how='left', left_on='id', right_index=True)
-    users = users.merge(action_type_total_time, how='left', left_on='id', right_index=True)
-    users = users.merge(action_type_median_time, how='left', left_on='id', right_index=True)
-    users = users.merge(action_type_min_time, how='left', left_on='id', right_index=True)
-    users = users.merge(action_type_max_time, how='left', left_on='id', right_index=True)
-    users = users.merge(device_type_total_time, how='left', left_on='id', right_index=True)
-    users = users.merge(device_type_median_time, how='left', left_on='id', right_index=True)
-    users = users.merge(device_type_min_time, how='left', left_on='id', right_index=True)
-    users = users.merge(device_type_max_time, how='left', left_on='id', right_index=True)
+    users = users.merge(total_action, how='inner', left_on='id', right_index=True)
+    users = users.merge(total_actions_ad, how='inner', left_on='id', right_index=True)
+    users = users.merge(nunique_a, how='inner', left_on='id', right_index=True)
+    users = users.merge(nunique_a_type, how='inner', left_on='id', right_index=True)
+    users = users.merge(nunique_a_det, how='inner', left_on='id', right_index=True)
+    users = users.merge(nunique_device, how='inner', left_on='id', right_index=True)
+    users = users.merge(total_time, how='inner', left_on='id', right_index=True)
+    users = users.merge(total_time_ad, how='inner', left_on='id', right_index=True)
+    users = users.merge(avg_time_ad, how='inner', left_on='id', right_index=True)
+    users = users.merge(std_time_ad, how='inner', left_on='id', right_index=True)
+    users = users.merge(nunique_a_ad, how='inner', left_on='id', right_index=True)
+    users = users.merge(nunique_a_det_ad, how='inner', left_on='id', right_index=True)
 
     return users
 
@@ -415,17 +391,19 @@ if __name__ == '__main__':
     # users_session = elaborateOnlineActivityStatistics(users)
 
     ''' CREATE TRAIN/TEST DATASETS  '''
+    # users_session.insert(0,'NANs',users_session.isnull().sum(axis = 1))
     # Y = np.array(users_session['country_destination'])
     # train_df, test_df, _, _ = train_test_split(users_session, Y, test_size=0.10, random_state=42)
     # ohe, train_categorical_cols_encoded = categoricalTransformation(train_df, ohe=None)
     # train_df = pd.concat(
-    #     (train_df[['id', 'country_destination', 'timestamp_first_active', 'time_gap_after_creation','week_first_active','week_created','age','signup_flow']],
-    #      train_categorical_cols_encoded, train_df.iloc[:, 17:].fillna(0)), axis=1)
+    #     (train_df[
+    #          ['id', 'country_destination', 'age', 'signup_flow','NANs']],
+    #      train_categorical_cols_encoded, train_df.iloc[:, 17:].fillna(0)), axis=1).fillna(0)
     # _, test_categorical_cols_encoded = categoricalTransformation(test_df, ohe=ohe)
     # test_df = pd.concat(
-    #     (test_df[['id', 'country_destination', 'timestamp_first_active', 'time_gap_after_creation', 'week_first_active','week_created','age','signup_flow']],
+    #     (test_df[['id', 'country_destination', 'age', 'signup_flow','NANs']],
     #      test_categorical_cols_encoded, test_df.iloc[:, 17:].fillna(0)),
-    #     axis=1)
+    #     axis=1).fillna(0)
 
     '''SAVE TRAIN/TEST DF'''
     # with open('train', 'wb') as f:
@@ -446,19 +424,30 @@ if __name__ == '__main__':
         y_test = np.array(test_df['country_destination'])
         X_test = test_df.iloc[:, 2:]
         f.close()
-    le = LabelEncoder()
-    y_train = le.fit_transform(y_train)
-    y_test = le.transform(y_test)
+    vt = VarianceThreshold()
+    X_train = vt.fit_transform(X_train)
+    X_test = vt.transform(X_test)
 
-    ''' SPLIT Xs INTO SESSION/NO SESSIONS '''
-    vt1 = VarianceThreshold()
-    vt2 = VarianceThreshold()
-    train_mask2014 = np.array(X_train.timestamp_first_active > pd.datetime(2013, 12, 31))
-    test_mask2014 = np.array(X_test.timestamp_first_active > pd.datetime(2013, 12, 31))
-    X_train_sessions = vt1.fit_transform(X_train[train_mask2014].iloc[:, [i for i in range(4, 683)]])
-    X_test_sessions = vt1.transform(X_test.iloc[:, [i for i in range(4, 683)]])
-    X_train_no_sessions = vt2.fit_transform(X_train.iloc[:, [i for i in range(1, 91)]])
-    X_test_no_sessions = vt2.transform(X_test.iloc[:, [i for i in range(1, 91)]])
+    ''' FEATURE SELECTION '''
+    # model = RandomForestClassifier(n_estimators=1000,class_weight='balanced',verbose=2,random_state=42)
+    # model.fit(X_train,y_train)
+    # fi = model.feature_importances_
+    # fi_95_cols = pd.DataFrame(fi,columns=['feat_importance']).sort_values('feat_importance',ascending=False).iloc[:140].index
+    # with open('fi.bin','wb') as f:
+    #     pickle.dump(fi_95_cols,f)
+    #     f.close()
+    # prediction = model.predict(X_test)
+    # print(confusion_matrix(y_test,prediction))
+
+    # ''' SPLIT Xs INTO SESSION/NO SESSIONS '''
+    # vt1 = VarianceThreshold()
+    # vt2 = VarianceThreshold()
+    # train_mask2014 = np.array(X_train.timestamp_first_active > pd.datetime(2013, 12, 31))
+    # test_mask2014 = np.array(X_test.timestamp_first_active > pd.datetime(2013, 12, 31))
+    # X_train_sessions = vt1.fit_transform(X_train[train_mask2014].iloc[:, [i for i in range(4, 316)]])
+    # X_test_sessions = vt1.transform(X_test.iloc[:, [i for i in range(4, 316)]])
+    # X_train_no_sessions = vt2.fit_transform(X_train.iloc[:, [i for i in range(1, 92)]])
+    # X_test_no_sessions = vt2.transform(X_test.iloc[:, [i for i in range(1, 92)]])
 
     ''' CROSS VALIDATION 2014 ONLY'''
     # estimator = XGBClassifier()
@@ -491,7 +480,6 @@ if __name__ == '__main__':
     # validate(model=estimator, X_train=X_train_sessions, y_train=y_train[train_mask2014], target='2014',
     #          model_name='XGBOOST', X_test=X_test_sessions[test_mask2014], y_test=y_test[test_mask2014],
     #          parameters=param_grid)
-
 
     ''' 2Ways SOLUTION'''
     # session_model = XGBClassifier(n_estimators=100, max_depth=10,objective='multi:softprob',n_jobs=-1)
@@ -546,42 +534,50 @@ if __name__ == '__main__':
     #          None, 'OVR_XGB_NOSESSION')
 
     '''cross validation single country for OVO'''
-    estimator = XGBClassifier()
-    y_train_countries = le.inverse_transform(y_train)
-    y_test_countries = le.inverse_transform(y_test)
-    de_es_mask_train = np.isin(y_train_countries, ['DE', 'NDF'])
-    de_es_mask_test = np.isin(y_test_countries, ['DE', 'NDF'])
-    y_train_bool = (y_train_countries[de_es_mask_train] == 'DE').astype(int)
-    y_test_bool = (y_test_countries[de_es_mask_test] == 'DE').astype(int)
-    param_grid = {'n_estimators': [100],
-                  'objective': ['binary:logistic'],
-                  'learning_rate': [0.05, 0.15],
-                  'min_child_weigth': [1, 8],
-                  'max_depth': [3, 21],
-                  'gamma': [0.1, 0.8],
-                  'max_delta_step': [0, 8],
-                  'subsample': [0.8, 1],
-                  'colsample_bytree': [0.5, 1],
-                  'reg_lambda': [1, 4],
-                  'scale_pos_weight': [0.1, 1]
-                  }
-    validate(X_train_no_sessions[de_es_mask_train], y_train_bool,
-             X_test_no_sessions[de_es_mask_test], y_test_bool, 'DE', None,
-             estimator, param_grid, None, 'OVO_XGB_NOSESSIONS')
+    # estimator = XGBClassifier()
+    # y_train_countries = le.inverse_transform(y_train)
+    # y_test_countries = le.inverse_transform(y_test)
+    # de_es_mask_train = np.isin(y_train_countries, ['DE', 'NDF'])
+    # de_es_mask_test = np.isin(y_test_countries, ['DE', 'NDF'])
+    # y_train_bool = (y_train_countries[de_es_mask_train] == 'DE').astype(int)
+    # y_test_bool = (y_test_countries[de_es_mask_test] == 'DE').astype(int)
+    # param_grid = {'n_estimators': [100],
+    #               'objective': ['binary:logistic'],
+    #               'learning_rate': [0.05, 0.15],
+    #               'min_child_weigth': [1, 8],
+    #               'max_depth': [3, 21],
+    #               'gamma': [0.1, 0.8],
+    #               'max_delta_step': [0, 8],
+    #               'subsample': [0.8, 1],
+    #               'colsample_bytree': [0.5, 1],
+    #               'reg_lambda': [1, 4],
+    #               'scale_pos_weight': [0.1, 1]
+    #               }
+    # validate(X_train_no_sessions[de_es_mask_train], y_train_bool,
+    #          X_test_no_sessions[de_es_mask_test], y_test_bool, 'DE', None,
+    #          estimator, param_grid, None, 'OVO_XGB_NOSESSIONS')
 
-    ''' OVO SESSION FIT '''
-    # estimator = XGBClassifier(n_estimators=100,objective='binary:logistic',learning_rate=0.15,min_child_weight=1,
-    #                           max_depth=21,gamma=0.8,max_delta_step=0,subsample=1,colsample_bytree=0.4,reg_lambda=4,
-    #                           scale_pos_weight=1.1,verbosity = 2)
-    # model = OneVsOneClassifier(estimator = estimator,n_jobs=4)
-    # model.fit(X_train_sessions,y_train[train_mask2014])
-    # with open('ovo_sessions.bin','wb') as f:
-    #     pickle.dump(model,f)
-    #     f.close()
-    # prediction = model.predict(X_test_sessions[test_mask2014])
-    # print(confusion_matrix(y_test[test_mask2014],prediction))
-    # print(balanced_accuracy_score(y_test[test_mask2014],prediction))
+    ''' trying different subsampling techniques '''
+    with open('fi.bin', 'rb') as f:
+        fi = pickle.load(f)
+        f.close()
+    model = XGBClassifier(n_estimators=100, max_depth=13, verbosity=2, objective='multi:softprob')
+    targeted_classes = {'NDF':2000,'US':2000,'other':2000}
+    ncr = RepeatedEditedNearestNeighbours(n_neighbors=3,sampling_strategy=targeted_classes, random_state=42,return_indices=True)
+    mms = MinMaxScaler()
+    X_train_mms = mms.fit_transform(X_train[:, fi])
+    X_train_r,y_train_r,indexes = ncr.fit_resample(X_train_mms, y_train)
+    resampling_index = random.sample(range(len(indexes)),len(indexes))
+    sampled_indices = indexes[resampling_index]
+    model.fit(X_train[sampled_indices][:,fi], y_train[sampled_indices])
+    with open('ovo.bin', 'wb') as f:
+        pickle.dump(model, f)
+        f.close()
+    prediction = model.predict(X_test[:, fi])
+    print('2000')
+    print(confusion_matrix(y_test, prediction))
+    print(balanced_accuracy_score(y_test, prediction))
 
-# TODO: provare cross validation per no session
-# TODO: valutare risultati cross validation ovr session e se in caso affinare la param grids
-# TODO: ripetere il  procedimento fatto per OVR anche per OVO
+
+# TODO: provare diverse iterazioni di rep edited nearest neighbours
+# TODO: provare near miss 2
