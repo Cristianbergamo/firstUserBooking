@@ -1,6 +1,0 @@
-OVR_XGB - TARGET: DE 
-{'colsample_bytree': 0.5, 'gamma': 0.1, 'learning_rate': 0.05, 'max_delta_step': 0, 'max_depth': 3, 'min_child_weigth': 1, 'n_estimators': 100, 'objective': 'binary:logistic', 'reg_lambda': 1, 'scale_pos_weight': 0.1, 'subsample': 0.8}
-Best score - 0.5
-Training Confusion Matrix
-[[68571     0]
- [  225     0]]
