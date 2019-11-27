@@ -197,12 +197,12 @@ def featureSelection(X_train, y_train, threshold):
     fi_cumulative = pd.DataFrame(fi, columns=['feat_importance']).sort_values('feat_importance',
                                                                               ascending=False).cumsum()
     fi_index = np.array(fi_cumulative[fi_cumulative['feat_importance'] <= threshold].index)
-    with open(os.path.join(MODELS_PATH,'fi.bin'), 'wb') as f:
+    with open(os.path.join(MODELS_PATH, 'fi_FINAL_TRAINING.bin'), 'wb') as f:
         pickle.dump(fi_index, f)
         f.close()
 
 
-def validateFitModel(X_train, y_train, X_test, y_test, cv=False, target=None):
+def validateFitModel(X_train, y_train, X_test=None, y_test=None, cv=False, target=None):
     rs = RobustScaler(quantile_range=(0.1, 0.90))
     mms = MinMaxScaler()
     X_train_mms = mms.fit_transform(rs.fit_transform(X_train))
@@ -211,7 +211,7 @@ def validateFitModel(X_train, y_train, X_test, y_test, cv=False, target=None):
     _, _, indexes = ncr.fit_resample(X_train_mms, y_train)
     resampling_index = random.sample(range(len(indexes)), len(indexes))
     sampled_indexes = indexes[resampling_index]
-    with open(os.path.join(MODELS_PATH,'sampled_dfs_%s.bin' % target), 'wb') as f:
+    with open(os.path.join(MODELS_PATH, 'sampled_dfs_%s.bin' % target), 'wb') as f:
         pickle.dump(sampled_indexes, f)
         f.close()
 
@@ -235,61 +235,80 @@ def validateFitModel(X_train, y_train, X_test, y_test, cv=False, target=None):
                  model=model, parameters=param_grid, model_name='XGB')
     else:
         model.fit(X_train[sampled_indexes], y_train[sampled_indexes])
-        with open(os.path.join(MODELS_PATH,'%s_fitted_classifier.bin' % target), 'wb') as f:
+        with open(os.path.join(MODELS_PATH, '%s_fitted_classifier.bin' % target), 'wb') as f:
             pickle.dump(model, f)
             f.close()
 
     return
 
 
+def fixAge(dataset=None):
+    dataset.replace('-unknown-', np.nan, inplace=True)
+    age = np.array(dataset.age)
+    np.place(age, age >= 110, np.nan)
+    np.place(age, age <= 14, np.nan)
+    np.place(age, age >= 80, 80)
+    dataset.loc[:, 'age'] = age
+    dataset.age.fillna(34, inplace=True)
+
+
+def datetimeEngineering(dataset):
+    dataset.loc[:, 'timestamp_first_active'] = pd.to_datetime(dataset['timestamp_first_active'].astype(str).str[:8])
+    dataset.loc[:, 'date_account_created'] = pd.to_datetime(dataset['date_account_created'])
+    dataset.insert(1, 'time_gap_after_creation',
+                   (dataset.timestamp_first_active - dataset.date_account_created).dt.days)
+    dataset.insert(1, 'week_created', dataset.loc[:, 'date_account_created'].dt.week)
+    dataset.insert(1, 'week_first_active', dataset.loc[:, 'timestamp_first_active'].dt.week)
+    dataset.drop(['date_account_created', 'timestamp_first_active', 'date_first_booking'], axis=1, inplace=True)
+
+
 if __name__ == '__main__':
-    # users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
+    train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
+    test_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'test_users.csv'))
+    test_users.insert(1, 'country_destination', 'NDF')
 
-    # ''' AGE FIXING '''
-    # users.replace('-unknown-', np.nan, inplace=True)
-    # age = np.array(users.age)
-    # np.place(age, age >= 110, np.nan)
-    # np.place(age, age <= 14, np.nan)
-    # np.place(age, age >= 80, 80)
-    # users.loc[:, 'age'] = age
-    # users.age.fillna(users.age.median(), inplace=True)
+    ''' PREPROCESSING '''
+    fixAge(train_users)
+    fixAge(test_users)
 
-    # ''' DATETIME ENGINEERING '''
-    # users.loc[:, 'timestamp_first_active'] = pd.to_datetime(users['timestamp_first_active'].astype(str).str[:8])
-    # users.loc[:, 'date_account_created'] = pd.to_datetime(users['date_account_created'])
-    # users.insert(1, 'time_gap_after_creation', (users.timestamp_first_active - users.date_account_created).dt.days)
-    # users.insert(1, 'week_created', users.loc[:, 'date_account_created'].dt.week)
-    # users.insert(1, 'week_first_active', users.loc[:, 'timestamp_first_active'].dt.week)
-    # users.drop(['date_account_created', 'timestamp_first_active', 'date_first_booking'], axis=1, inplace=True)
+    datetimeEngineering(train_users)
+    datetimeEngineering(test_users)
 
-    # ''' SESSIONS STATISTICS '''
-    # users_session = elaborateOnlineActivityStatistics(users)
+    train_users_sessions = elaborateOnlineActivityStatistics(train_users)
+    test_users_sessions = elaborateOnlineActivityStatistics(test_users)
 
+    train_users_sessions.insert(0, 'NANs', train_users_sessions.isnull().sum(axis=1))
+    test_users_sessions.insert(0, 'NANs', test_users_sessions.isnull().sum(axis=1))
+
+    # Commented for final training:
     # ''' CREATE TRAIN/TEST DATASETS  '''
-    # users_session.insert(0, 'NANs', users_session.isnull().sum(axis=1))
-    # Y = np.array(users_session['country_destination'])
-    # train_df, test_df, _, _ = train_test_split(users_session, Y, test_size=0.10, random_state=42)
-    # ohe, train_categorical_cols_encoded = categoricalTransformation(train_df, ohe=None)
-    # train_df = pd.concat(
-    #     (train_df[
-    #          ['id', 'sessions', 'country_destination', 'time_gap_after_creation', 'week_created', 'week_first_active',
-    #           'age', 'signup_flow', 'NANs']],
-    #      train_categorical_cols_encoded, train_df.iloc[:, 17:-1].fillna(0)), axis=1).fillna(0)
-    # _, test_categorical_cols_encoded = categoricalTransformation(test_df, ohe=ohe)
-    # test_df = pd.concat(
-    #     (test_df[
-    #          ['id', 'sessions', 'country_destination', 'time_gap_after_creation', 'week_created', 'week_first_active',
-    #           'age', 'signup_flow', 'NANs']],
-    #      test_categorical_cols_encoded, test_df.iloc[:, 17:-1].fillna(0)),
-    #     axis=1).fillna(0)
+    # Y = np.array(train_users_sessions['country_destination'])
+    # train_df, test_df, _, _ = train_test_split(train_users_sessions, Y, test_size=0.0, random_state=42)
+
+    ''' CATEGORICAL ENCODING '''
+    ohe, train_categorical_cols_encoded = categoricalTransformation(train_users_sessions, ohe=None)
+    _, test_categorical_cols_encoded = categoricalTransformation(test_users_sessions, ohe=ohe)
+
+    ''' CONCATENATION OF VARIABLES FOR CREATING FINAL DATASETS '''
+    train_df = pd.concat(
+        (train_users_sessions[
+             ['id', 'sessions', 'country_destination', 'time_gap_after_creation', 'week_created', 'week_first_active',
+              'age', 'signup_flow', 'NANs']],
+         train_categorical_cols_encoded, train_users_sessions.iloc[:, 17:-1].fillna(0)), axis=1).fillna(0)
+    test_df = pd.concat(
+        (test_users_sessions[
+             ['id', 'sessions', 'country_destination', 'time_gap_after_creation', 'week_created', 'week_first_active',
+              'age', 'signup_flow', 'NANs']],
+         test_categorical_cols_encoded, test_users_sessions.iloc[:, 17:-1].fillna(0)),
+        axis=1).fillna(0)
 
     '''SAVE TRAIN/TEST DF'''
-    # with open('train_all', 'wb') as f:
-    #     pickle.dump(train_df, f)
-    #     f.close()
-    # with open('test_all', 'wb') as f:
-    #     pickle.dump(test_df, f)
-    #     f.close()
+    with open('train_FINAL_TRAINING', 'wb') as f:
+        pickle.dump(train_df, f)
+        f.close()
+    with open('test_FINAL_TRAINING', 'wb') as f:
+        pickle.dump(test_df, f)
+        f.close()
 
     '''LOAD TRAIN/TEST DF'''
     with open('train_all', 'rb') as f:
@@ -326,47 +345,49 @@ if __name__ == '__main__':
     X_test_no_sessions = vt.transform(X_test_no_sessions)
 
     ''' Feature Selection (for sessions only)'''
-    # featureSelection(X_train_sessions, y_train_sessions, 0.95)
-    with open(os.path.join(MODELS_PATH,'fi.bin'), 'rb') as f:
+    featureSelection(X_train_sessions, y_train_sessions, 0.95)
+    with open(os.path.join(MODELS_PATH, 'fi_FINAL_TRAINING.bin'), 'rb') as f:
         fi = pickle.load(f)
         f.close()
     X_train_sessions = X_train_sessions[:, fi].copy()
     X_test_sessions = X_test_sessions[:, fi].copy()
 
     '''Validation/fitting Models'''
-    # validateFitModel(X_train_sessions, y_train_sessions, X_test_sessions, y_test_sessions, False, target='session')
-    # validateFitModel(X_train_no_sessions, y_train_no_sessions, X_test_no_sessions, y_test_no_sessions, False,
-    #                  target='no_session')
+    validateFitModel(X_train_sessions, y_train_sessions, X_test_sessions, y_test_sessions, False,
+                     target='session_FINAL_TRAINING')
+    validateFitModel(X_train_no_sessions, y_train_no_sessions, X_test_no_sessions, y_test_no_sessions, False,
+                     target='no_session_FINAL_TRAINING')
 
     ''' Prediction '''
-    with open(os.path.join(MODELS_PATH,'session_fitted_classifier.bin'), 'rb') as f:
+    with open(os.path.join(MODELS_PATH, 'session_FINAL_TRAINING_fitted_classifier.bin'), 'rb') as f:
         sessions_model = pickle.load(f)
         f.close()
 
-    with open(os.path.join(MODELS_PATH,'no_session_fitted_classifier.bin'), 'rb') as f:
+    with open(os.path.join(MODELS_PATH, 'no_session_FINAL_TRAINING_fitted_classifier.bin'), 'rb') as f:
         no_sessions_model = pickle.load(f)
         f.close()
+
     no_sessions_prediction = no_sessions_model.predict_proba(X_test_no_sessions)
     sessions_prediction = sessions_model.predict_proba(X_test_sessions)
     no_sessions_prediction[test_session_mask] = (no_sessions_prediction[test_session_mask] * 0.50) + (
             sessions_prediction * 0.50)
-    weighted_prediction = np.argmax(no_sessions_prediction, axis=1)
+    weighted_prediction = le.inverse_transform(np.argmax(no_sessions_prediction, axis=1))
+    df = pd.DataFrame({'id':test_df.index,'country':weighted_prediction})
+    df.to_csv('submission.csv',sep = ',',index=False)
 
-    print('all test - best 10')
-    print(confusion_matrix(y_test, weighted_prediction))
-    print(balanced_accuracy_score(y_test, weighted_prediction))
-    print(ndcg_score(y_test, no_sessions_prediction,4))
-
-    print('sessions only - best 15')
-    print(confusion_matrix(y_test[test_session_mask], weighted_prediction[test_session_mask]))
-    print(balanced_accuracy_score(y_test[test_session_mask], weighted_prediction[test_session_mask]))
-    print(ndcg_score(y_test[test_session_mask], sessions_prediction,4))
-    print('p')
-
-    df = pd.DataFrame(np.argsort(-no_sessions_prediction))
-    df.insert(12,'true',y_test_no_sessions)
-    dict = {}
-    for i in range(12):
-        dict[i] = le.inverse_transform([i])[0]
-    df = df.applymap(lambda x: dict[x])
-    print('p')
+    ''' Evaluation '''
+    # print('all test - best 10')
+    # print(confusion_matrix(y_test, weighted_prediction))
+    # print(balanced_accuracy_score(y_test, weighted_prediction))
+    # print(ndcg_score(y_test, no_sessions_prediction, 4))
+    # print('sessions only - best 15')
+    # print(confusion_matrix(y_test[test_session_mask], weighted_prediction[test_session_mask]))
+    # print(balanced_accuracy_score(y_test[test_session_mask], weighted_prediction[test_session_mask]))
+    # print(ndcg_score(y_test[test_session_mask], sessions_prediction, 4))
+    # print('p')
+    # df_rank = pd.DataFrame(np.argsort(-no_sessions_prediction))
+    # df_rank.insert(12, 'true', y_test_no_sessions)
+    # dict = {}
+    # for i in range(12):
+    #     dict[i] = le.inverse_transform([i])[0]
+    # df_rank = df_rank.applymap(lambda x: dict[x])
