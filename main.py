@@ -197,7 +197,7 @@ def featureSelection(X_train, y_train, threshold):
     fi_cumulative = pd.DataFrame(fi, columns=['feat_importance']).sort_values('feat_importance',
                                                                               ascending=False).cumsum()
     fi_index = np.array(fi_cumulative[fi_cumulative['feat_importance'] <= threshold].index)
-    with open(os.path.join(MODELS_PATH, 'fi_FINAL_TRAINING.bin'), 'wb') as f:
+    with open(os.path.join(MODELS_PATH, 'fi_%s.bin' % TRAINING_NAME), 'wb') as f:
         pickle.dump(fi_index, f)
         f.close()
 
@@ -249,7 +249,7 @@ def fixAge(dataset=None):
     np.place(age, age <= 14, np.nan)
     np.place(age, age >= 80, 80)
     dataset.loc[:, 'age'] = age
-    dataset.age.fillna(34, inplace=True)
+    dataset.age.fillna(34, inplace=True)#34 is the median in training
 
 
 def datetimeEngineering(dataset):
@@ -263,9 +263,11 @@ def datetimeEngineering(dataset):
 
 
 if __name__ == '__main__':
+    TRAINING_NAME = 'FINAL_TRAINING'
+
     train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
     test_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'test_users.csv'))
-    test_users.insert(1, 'country_destination', 'NDF')
+    test_users.insert(15, 'country_destination', 'NDF')
 
     ''' PREPROCESSING '''
     fixAge(train_users)
@@ -283,7 +285,7 @@ if __name__ == '__main__':
     # Commented for final training:
     # ''' CREATE TRAIN/TEST DATASETS  '''
     # Y = np.array(train_users_sessions['country_destination'])
-    # train_df, test_df, _, _ = train_test_split(train_users_sessions, Y, test_size=0.0, random_state=42)
+    # train_df, test_df, _, _ = train_test_split(train_users_sessions, Y, test_size=0.10, random_state=42)
 
     ''' CATEGORICAL ENCODING '''
     ohe, train_categorical_cols_encoded = categoricalTransformation(train_users_sessions, ohe=None)
@@ -303,20 +305,20 @@ if __name__ == '__main__':
         axis=1).fillna(0)
 
     '''SAVE TRAIN/TEST DF'''
-    with open('train_FINAL_TRAINING', 'wb') as f:
+    with open('train_%s' % TRAINING_NAME, 'wb') as f:
         pickle.dump(train_df, f)
         f.close()
-    with open('test_FINAL_TRAINING', 'wb') as f:
+    with open('test_%s' % TRAINING_NAME, 'wb') as f:
         pickle.dump(test_df, f)
         f.close()
 
     '''LOAD TRAIN/TEST DF'''
-    with open('train_all', 'rb') as f:
+    with open('train_%s' % TRAINING_NAME, 'rb') as f:
         train_df = pickle.load(f)
         y_train = np.array(train_df['country_destination'])
         X_train = train_df.iloc[:, 3:]
         f.close()
-    with open('test_all', 'rb') as f:
+    with open('test_%s'% TRAINING_NAME, 'rb') as f:
         test_df = pickle.load(f)
         y_test = np.array(test_df['country_destination'])
         X_test = test_df.iloc[:, 3:]
@@ -346,7 +348,7 @@ if __name__ == '__main__':
 
     ''' Feature Selection (for sessions only)'''
     featureSelection(X_train_sessions, y_train_sessions, 0.95)
-    with open(os.path.join(MODELS_PATH, 'fi_FINAL_TRAINING.bin'), 'rb') as f:
+    with open(os.path.join(MODELS_PATH, 'fi_%s.bin' % TRAINING_NAME), 'rb') as f:
         fi = pickle.load(f)
         f.close()
     X_train_sessions = X_train_sessions[:, fi].copy()
@@ -354,16 +356,16 @@ if __name__ == '__main__':
 
     '''Validation/fitting Models'''
     validateFitModel(X_train_sessions, y_train_sessions, X_test_sessions, y_test_sessions, False,
-                     target='session_FINAL_TRAINING')
+                     target='session_%s' % TRAINING_NAME)
     validateFitModel(X_train_no_sessions, y_train_no_sessions, X_test_no_sessions, y_test_no_sessions, False,
-                     target='no_session_FINAL_TRAINING')
+                     target='no_session_%s' % TRAINING_NAME)
 
     ''' Prediction '''
-    with open(os.path.join(MODELS_PATH, 'session_FINAL_TRAINING_fitted_classifier.bin'), 'rb') as f:
+    with open(os.path.join(MODELS_PATH, 'session_%s_fitted_classifier.bin' % TRAINING_NAME), 'rb') as f:
         sessions_model = pickle.load(f)
         f.close()
 
-    with open(os.path.join(MODELS_PATH, 'no_session_FINAL_TRAINING_fitted_classifier.bin'), 'rb') as f:
+    with open(os.path.join(MODELS_PATH, 'no_session_%s_fitted_classifier.bin' % TRAINING_NAME), 'rb') as f:
         no_sessions_model = pickle.load(f)
         f.close()
 
@@ -372,22 +374,6 @@ if __name__ == '__main__':
     no_sessions_prediction[test_session_mask] = (no_sessions_prediction[test_session_mask] * 0.50) + (
             sessions_prediction * 0.50)
     weighted_prediction = le.inverse_transform(np.argmax(no_sessions_prediction, axis=1))
-    df = pd.DataFrame({'id':test_df.index,'country':weighted_prediction})
+    df = pd.DataFrame({'id':test_df.id,'country':weighted_prediction})
     df.to_csv('submission.csv',sep = ',',index=False)
 
-    ''' Evaluation '''
-    # print('all test - best 10')
-    # print(confusion_matrix(y_test, weighted_prediction))
-    # print(balanced_accuracy_score(y_test, weighted_prediction))
-    # print(ndcg_score(y_test, no_sessions_prediction, 4))
-    # print('sessions only - best 15')
-    # print(confusion_matrix(y_test[test_session_mask], weighted_prediction[test_session_mask]))
-    # print(balanced_accuracy_score(y_test[test_session_mask], weighted_prediction[test_session_mask]))
-    # print(ndcg_score(y_test[test_session_mask], sessions_prediction, 4))
-    # print('p')
-    # df_rank = pd.DataFrame(np.argsort(-no_sessions_prediction))
-    # df_rank.insert(12, 'true', y_test_no_sessions)
-    # dict = {}
-    # for i in range(12):
-    #     dict[i] = le.inverse_transform([i])[0]
-    # df_rank = df_rank.applymap(lambda x: dict[x])

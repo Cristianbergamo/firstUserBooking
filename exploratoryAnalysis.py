@@ -226,15 +226,32 @@ def trainUsersAnalysis(users=None, columns_to_analyze=[]):
     return users
 
 
+def datetimeAnalysis(users=None):
+    users.loc[:, 'timestamp_first_active'] = pd.to_datetime(users['timestamp_first_active'].astype(str).str[:8],format = '%Y%m%d')
+    users.loc[:, 'date_account_created'] = pd.to_datetime(users['date_account_created'],format = '%Y-%m-%d' )
+    users.insert(1, 'time_gap_after_creation',
+                 (users.timestamp_first_active - users.date_account_created).dt.days)
+
+    for year in range(2010,2015):
+
+        data = users[users.timestamp_first_active.dt.year == 2014].time_gap_after_creation
+        plt.scatter(range(len(data)),data)
+        plt.title('timegap first_active - date_creation for year ' + str(year))
+        plt.show()
+        plt.clf()
+        plt.close()
+
+
 if __name__ == '__main__':
     train_users = pd.read_csv(os.path.join(os.getcwd(), 'data', 'train_users.csv'))
-    train_users.drop('age', axis=1, inplace=True)
-    ageBucketAnalysis()
-    sessionsAnalysisBooked(col_to_analyze='action_type', sessions=sessionsUsers(boolean_booked=1, users=train_users))
-    sessionsAnalysisDestination('action_type', sessionsUsers(boolean_booked=0, users=train_users))
-    sessionsAnalysisBooked('device_type', mapDevices(sessionsUsers(boolean_booked=1, users=train_users)))
-    sessionsAnalysisDestination('device_type', mapDevices(sessionsUsers(boolean_booked=0, users=train_users)))
-    trainUsersAnalysis(users=train_users,
-                       columns_to_analyze=['gender', 'signup_method', 'signup_flow', 'language', 'affiliate_channel',
-                                           'affiliate_provider', 'first_affiliate_tracked', 'signup_app',
-                                           'first_device_type', 'first_browser'])
+    # train_users.drop('age', axis=1, inplace=True)
+    # ageBucketAnalysis()
+    # sessionsAnalysisBooked(col_to_analyze='action_type', sessions=sessionsUsers(boolean_booked=1, users=train_users))
+    # sessionsAnalysisDestination('action_type', sessionsUsers(boolean_booked=0, users=train_users))
+    # sessionsAnalysisBooked('device_type', mapDevices(sessionsUsers(boolean_booked=1, users=train_users)))
+    # sessionsAnalysisDestination('device_type', mapDevices(sessionsUsers(boolean_booked=0, users=train_users)))
+    # trainUsersAnalysis(users=train_users,
+    #                    columns_to_analyze=['gender', 'signup_method', 'signup_flow', 'language', 'affiliate_channel',
+    #                                        'affiliate_provider', 'first_affiliate_tracked', 'signup_app',
+    #                                        'first_device_type', 'first_browser'])
+    datetimeAnalysis(train_users)

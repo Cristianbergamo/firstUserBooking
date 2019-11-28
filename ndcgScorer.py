@@ -1,7 +1,7 @@
 import numpy as np
 from sklearn.preprocessing import LabelBinarizer
 
-def dcg_score(y_true, y_score, k=5):
+def dcg_score(y_true, y_score, k=4):
     
     order = np.argsort(y_score)[::-1]
     y_true = np.take(y_true, order[:k])
@@ -9,7 +9,7 @@ def dcg_score(y_true, y_score, k=5):
     discounts = np.log2(np.arange(len(y_true)) + 2)
     return np.sum(gain / discounts)
 
-def ndcg_score(ground_truth, predictions, k=5):
+def ndcg_score(ground_truth, predictions, k=4):
     
     lb = LabelBinarizer()
     lb.fit(range(len(predictions) + 1))

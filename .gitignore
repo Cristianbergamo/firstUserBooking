@@ -8,3 +8,7 @@ fi
 download.pdf
 train_all
 test_all
+train_FINAL_TRAINING
+test_FINAL_TRAINING
+test_testing_final_setting
+train_testing_final_setting
