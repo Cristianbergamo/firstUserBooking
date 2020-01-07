@@ -1,6 +1,6 @@
-First User Booking from Airbnb
+First User Booking challenge by Airbnb
 
-The task is about predicting the destination country of AirBnb users. The model trained is able to reach a 82% NDCG with k=5.
+The task is tp predict the destination country of AirBnb users. The model trained is reaches an 82% NDCG with k=5.
 
 For more details read the following:
 
